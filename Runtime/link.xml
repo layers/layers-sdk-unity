@@ -1,0 +1,3 @@
+<linker>
+  <assembly fullname="Layers.Unity" preserve="all"/>
+</linker>

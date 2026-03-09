@@ -1,0 +1,19 @@
+{
+  "name": "com.layers.analytics",
+  "version": "1.3.0",
+  "displayName": "Layers Analytics",
+  "description": "Layers Analytics SDK for Unity — Rust-powered analytics core with thin C# wrapper. iOS and Android.",
+  "unity": "2021.3",
+  "keywords": ["analytics", "attribution", "mobile", "skan", "att"],
+  "author": {
+    "name": "Layers",
+    "url": "https://layers.com"
+  },
+  "samples": [
+    {
+      "displayName": "Basic Usage",
+      "description": "Initialize, track events, and handle deep links.",
+      "path": "Samples~/BasicUsage"
+    }
+  ]
+}
