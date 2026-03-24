@@ -86,6 +86,17 @@ namespace Layers.Unity.Internal
         internal static extern IntPtr layers_set_user_properties_once(
             [MarshalAs(UnmanagedType.LPUTF8Str)] string properties_json);
 
+        // ── Group ────────────────────────────────────────────────────
+
+        /// <summary>
+        /// Associate subsequent events with a group (company, team, organization).
+        /// Returns null on success, error string on failure.
+        /// </summary>
+        [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern IntPtr layers_group(
+            [MarshalAs(UnmanagedType.LPUTF8Str)] string group_id,
+            [MarshalAs(UnmanagedType.LPUTF8Str)] string properties_json);
+
         // ── Consent ────────────────────────────────────────────────────
 
         /// <summary>

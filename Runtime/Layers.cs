@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using Layers.Unity.Internal;
 using UnityEngine;
 
@@ -9,9 +10,12 @@ namespace Layers.Unity
     /// Main public API for the Layers Unity SDK.
     ///
     /// Static singleton facade that delegates all analytics logic to the Rust core
-    /// via P/Invoke (<see cref="NativeBindings"/>). Platform-specific modules (ATT,
-    /// SKAN, deep links, Android GAID/install referrer) are initialized automatically
-    /// based on the target platform.
+    /// via <see cref="ILayersPlatform"/>. On native targets (iOS, Android, desktop),
+    /// this uses P/Invoke to the Rust FFI C ABI. On WebGL, it uses
+    /// [DllImport("__Internal")] to call a jslib bridge which loads the Rust WASM
+    /// binary. Platform-specific modules (ATT, SKAN, deep links, Android
+    /// GAID/install referrer, WebGL CAPI) are initialized automatically based on
+    /// the target platform.
     ///
     /// Usage:
     /// <code>
@@ -39,6 +43,7 @@ namespace Layers.Unity
         private static FlushManager _flushManager;
         private static RemoteConfigPoller _configPoller;
         private static string _userId;
+        private static ILayersPlatform _platform;
 
         // ── Events ───────────────────────────────────────────────────────
 
@@ -70,8 +75,8 @@ namespace Layers.Unity
         {
             get
             {
-                if (!_isInitialized) return null;
-                return NativeStringHelper.ReadAndFree(NativeBindings.layers_get_session_id());
+                if (!_isInitialized || _platform == null) return null;
+                return _platform.GetSessionId();
             }
         }
 
@@ -79,7 +84,14 @@ namespace Layers.Unity
         /// The number of events currently waiting in the outbound queue.
         /// Returns -1 if the SDK has not been initialized.
         /// </summary>
-        public static int QueueDepth => NativeBindings.layers_queue_depth();
+        public static int QueueDepth
+        {
+            get
+            {
+                if (_platform == null) return -1;
+                return _platform.QueueDepth();
+            }
+        }
 
         /// <summary>
         /// The latest remote config JSON fetched from the server, or null if
@@ -89,11 +101,28 @@ namespace Layers.Unity
         {
             get
             {
-                if (!_isInitialized) return null;
-                return NativeStringHelper.ReadAndFree(
-                    NativeBindings.layers_get_remote_config_json());
+                if (!_isInitialized || _platform == null) return null;
+                return _platform.GetRemoteConfigJson();
             }
         }
+
+        // ── Internal Accessors (used by DebugOverlay) ────────────────────
+
+        /// <summary>
+        /// The current environment setting, or null if not initialized.
+        /// </summary>
+        internal static string Environment =>
+            _config?.Environment.ToString().ToLowerInvariant();
+
+        /// <summary>
+        /// The configured app ID, or null if not initialized.
+        /// </summary>
+        internal static string AppId => _config?.AppId;
+
+        /// <summary>
+        /// The current SDK configuration, or null if not initialized.
+        /// </summary>
+        internal static LayersConfig Config => _config;
 
         // ── Initialization ───────────────────────────────────────────────
 
@@ -122,13 +151,23 @@ namespace Layers.Unity
             _config = config;
             LayersLogger.Enabled = config.EnableDebug;
 
+            // Snapshot whether an install_id already exists before DeviceInfoCollector
+            // creates one. This is needed by InstallEventGate to distinguish a genuine
+            // first launch from an existing app that just added the SDK.
+            InstallEventGate.CapturePreInitState();
+
+            // Select the correct platform implementation
+            _platform = LayersPlatformFactory.Create();
+
+            // Measure initialization time
+            var initStopwatch = Stopwatch.StartNew();
+
             // Build config JSON for the Rust core
             var configDict = new Dictionary<string, object>
             {
                 ["app_id"] = config.AppId,
                 ["environment"] = config.Environment.ToString().ToLowerInvariant(),
                 ["sdk_version"] = $"unity/{SdkVersion}",
-                ["persistence_dir"] = Application.persistentDataPath,
                 ["enable_debug"] = config.EnableDebug,
                 ["flush_interval_ms"] = config.FlushIntervalMs,
                 ["flush_threshold"] = config.FlushThreshold,
@@ -136,11 +175,16 @@ namespace Layers.Unity
                 ["max_batch_size"] = config.MaxBatchSize
             };
 
+            // Native platforms use file-based persistence; WebGL uses localStorage via jslib
+#if !UNITY_WEBGL || UNITY_EDITOR
+            configDict["persistence_dir"] = Application.persistentDataPath;
+#endif
+
             if (!string.IsNullOrEmpty(config.BaseUrl))
                 configDict["base_url"] = config.BaseUrl;
 
             string configJson = JsonHelper.Serialize(configDict);
-            string error = NativeStringHelper.ProcessResult(NativeBindings.layers_init(configJson));
+            string error = _platform.Init(configJson);
             if (error != null)
             {
                 RaiseError("Initialize", error);
@@ -150,18 +194,31 @@ namespace Layers.Unity
             _isInitialized = true;
 
             // Set device context (platform, os_version, device_model, etc.)
+#if UNITY_WEBGL && !UNITY_EDITOR
+            var deviceInfo = WebGLDeviceInfoCollector.Collect();
+#else
             var deviceInfo = DeviceInfoCollector.Collect();
-            NativeStringHelper.ProcessResult(
-                NativeBindings.layers_set_device_context(JsonHelper.Serialize(deviceInfo)));
+#endif
+            _platform.SetDeviceContext(JsonHelper.Serialize(deviceInfo));
 
             // Create the runner singleton (hosts coroutines + lifecycle hooks)
             var runner = LayersRunner.Instance;
 
-            // Start periodic flush
+            // On WebGL, the jslib manages its own flush timer, lifecycle listeners,
+            // and HTTP delivery via fetch/sendBeacon. FlushManager uses NativeBindings
+            // (P/Invoke) which is not available on WebGL, so skip it entirely.
+#if !UNITY_WEBGL || UNITY_EDITOR
+            // Native: start the coroutine-based periodic flush with UnityWebRequest
             _flushManager = new FlushManager(runner, (uint)config.MaxBatchSize);
             _flushManager.StartPeriodicFlush(config.FlushIntervalMs / 1000f);
+#endif
 
-            // Start remote config polling (default 5 minute interval)
+            // Start remote config polling (default 5 minute interval).
+            // On WebGL, the jslib handles config polling via fetch (UnityWebRequest
+            // is not available in WebGL builds). On native, use the coroutine-based poller.
+#if UNITY_WEBGL && !UNITY_EDITOR
+            // jslib handles config polling — see LayersWebGL_StartConfigPolling
+#else
             string baseUrl = !string.IsNullOrEmpty(config.BaseUrl)
                 ? config.BaseUrl
                 : "https://in.layers.com";
@@ -173,16 +230,26 @@ namespace Layers.Unity
 #endif
 
             _configPoller.StartPolling(300f);
+#endif
 
-            // Initialize deep links module
+            // Initialize deep links module.
+            // On WebGL, the jslib handles deep link tracking via popstate/hashchange
+            // listeners and fires deep_link_opened events directly through the WASM
+            // core. DeepLinksModule uses NativeBindings (P/Invoke to layers_core)
+            // which is not available on WebGL, so skip it entirely.
+#if !UNITY_WEBGL || UNITY_EDITOR
             if (config.AutoTrackDeepLinks)
                 DeepLinksModule.Init(true, config.EnableDebug);
             else
                 DeepLinksModule.Init(false, config.EnableDebug);
+#endif
+
+            // Restore persisted attribution data (deeplink_id, gclid) BEFORE firing
+            // app_open so that the Rust core's DeviceContext includes them in the
+            // first event.
+            RestoreAttributionData();
 
             // Collect attribution signals and fire app_open with them (if enabled).
-            // This checks remote config for clipboard_attribution_enabled,
-            // collects AdServices token (iOS), clipboard URL, and timezone.
             TrackAttributionSignals(config);
 
             // Platform-specific initialization
@@ -194,7 +261,19 @@ namespace Layers.Unity
             InitAndroidModules();
 #endif
 
-            LayersLogger.Log($"Layers SDK initialized (appId={config.AppId}, env={config.Environment})");
+#if UNITY_WEBGL && !UNITY_EDITOR
+            InitWebGLModules();
+#endif
+
+            // Record init timing
+            initStopwatch.Stop();
+            long initDurationMs = initStopwatch.ElapsedMilliseconds;
+            Track("layers_init_timing", new Dictionary<string, object>
+            {
+                ["duration_ms"] = initDurationMs
+            });
+
+            LayersLogger.Log($"Layers SDK initialized in {initDurationMs}ms (appId={config.AppId}, env={config.Environment})");
         }
 
         // ── Event Tracking ───────────────────────────────────────────────
@@ -218,14 +297,35 @@ namespace Layers.Unity
             }
 
             string propsJson = properties != null ? JsonHelper.Serialize(properties) : null;
-            string error = NativeStringHelper.ProcessResult(
-                NativeBindings.layers_track(eventName, propsJson));
+
+            // Queue depth gating: verify the Rust core actually accepted the event.
+            // Skipped on WebGL because the jslib may buffer events in the pre-init
+            // queue before WASM is ready, making QueueDepth() unreliable.
+#if !UNITY_WEBGL || UNITY_EDITOR
+            int depthBefore = _platform.QueueDepth();
+#endif
+
+            string error = _platform.Track(eventName, propsJson);
 
             if (error != null)
             {
                 RaiseError("Track", error);
                 return;
             }
+
+#if !UNITY_WEBGL || UNITY_EDITOR
+            int depthAfter = _platform.QueueDepth();
+            if (depthAfter <= depthBefore)
+            {
+                LayersLogger.Warn(
+                    $"Event '{eventName}' was not accepted by the core (queue depth {depthBefore} -> {depthAfter}). " +
+                    "It may have been filtered by sampling, rate limiting, or consent.");
+            }
+#endif
+
+            // Record event in debug overlay (if visible)
+            if (_debugOverlay != null)
+                DebugOverlay.RecordEvent(eventName, properties?.Count ?? 0);
 
             // Process event against SKAN rules (iOS only)
 #if UNITY_IOS && !UNITY_EDITOR
@@ -252,11 +352,31 @@ namespace Layers.Unity
             }
 
             string propsJson = properties != null ? JsonHelper.Serialize(properties) : null;
-            string error = NativeStringHelper.ProcessResult(
-                NativeBindings.layers_screen(screenName, propsJson));
+
+            // Queue depth gating: verify the Rust core actually accepted the event.
+            // Skipped on WebGL because the jslib may buffer events in the pre-init
+            // queue before WASM is ready, making QueueDepth() unreliable.
+#if !UNITY_WEBGL || UNITY_EDITOR
+            int depthBefore = _platform.QueueDepth();
+#endif
+
+            string error = _platform.Screen(screenName, propsJson);
 
             if (error != null)
+            {
                 RaiseError("Screen", error);
+                return;
+            }
+
+#if !UNITY_WEBGL || UNITY_EDITOR
+            int depthAfter = _platform.QueueDepth();
+            if (depthAfter <= depthBefore)
+            {
+                LayersLogger.Warn(
+                    $"Screen '{screenName}' was not accepted by the core (queue depth {depthBefore} -> {depthAfter}). " +
+                    "It may have been filtered by sampling, rate limiting, or consent.");
+            }
+#endif
         }
 
         // ── User Identity ────────────────────────────────────────────────
@@ -275,8 +395,7 @@ namespace Layers.Unity
                 return;
             }
 
-            string error = NativeStringHelper.ProcessResult(
-                NativeBindings.layers_identify(userId));
+            string error = _platform.Identify(userId);
 
             if (error != null)
                 RaiseError("Identify", error);
@@ -300,8 +419,7 @@ namespace Layers.Unity
             }
 
             string json = JsonHelper.Serialize(properties);
-            string error = NativeStringHelper.ProcessResult(
-                NativeBindings.layers_set_user_properties(json));
+            string error = _platform.SetUserProperties(json);
 
             if (error != null)
                 RaiseError("SetUserProperties", error);
@@ -324,11 +442,35 @@ namespace Layers.Unity
             }
 
             string json = JsonHelper.Serialize(properties);
-            string error = NativeStringHelper.ProcessResult(
-                NativeBindings.layers_set_user_properties_once(json));
+            string error = _platform.SetUserPropertiesOnce(json);
 
             if (error != null)
                 RaiseError("SetUserPropertiesOnce", error);
+        }
+
+        // ── Group ────────────────────────────────────────────────────
+
+        /// <summary>
+        /// Associate subsequent events with a group (company, team, organization).
+        /// Group properties are upserted and attached to the user-group relationship.
+        /// </summary>
+        /// <param name="groupId">The group identifier. Must not be null or empty.</param>
+        /// <param name="properties">Optional group properties (e.g. name, plan, industry).</param>
+        public static void Group(string groupId, Dictionary<string, object> properties = null)
+        {
+            if (!CheckInitialized("Group")) return;
+
+            if (string.IsNullOrEmpty(groupId))
+            {
+                RaiseError("Group", "groupId must not be null or empty");
+                return;
+            }
+
+            string propsJson = properties != null ? JsonHelper.Serialize(properties) : null;
+            string error = _platform.Group(groupId, propsJson);
+
+            if (error != null)
+                RaiseError("Group", error);
         }
 
         // ── Consent ──────────────────────────────────────────────────────
@@ -348,8 +490,7 @@ namespace Layers.Unity
             if (advertising.HasValue) consent["advertising"] = advertising.Value;
 
             string json = JsonHelper.Serialize(consent);
-            string error = NativeStringHelper.ProcessResult(
-                NativeBindings.layers_set_consent(json));
+            string error = _platform.SetConsent(json);
 
             if (error != null)
                 RaiseError("SetConsent", error);
@@ -364,7 +505,37 @@ namespace Layers.Unity
         public static void Flush()
         {
             if (!CheckInitialized("Flush")) return;
+#if UNITY_WEBGL && !UNITY_EDITOR
+            // On WebGL, delegate directly to the jslib which handles fetch internally
+            _platform?.Flush();
+#else
             _flushManager?.FlushNow();
+#endif
+        }
+
+        /// <summary>
+        /// Trigger an immediate flush with a completion callback. Used internally
+        /// by <see cref="BackgroundFlush"/> to signal the native plugin only after
+        /// the HTTP flush has actually completed.
+        /// </summary>
+        internal static void FlushWithCallback(Action onComplete)
+        {
+            if (!CheckInitialized("FlushWithCallback"))
+            {
+                onComplete?.Invoke();
+                return;
+            }
+
+#if UNITY_WEBGL && !UNITY_EDITOR
+            // WebGL flush is fire-and-forget from the jslib side
+            _platform?.Flush();
+            onComplete?.Invoke();
+#else
+            if (_flushManager != null)
+                _flushManager.FlushWithCallback(onComplete);
+            else
+                onComplete?.Invoke();
+#endif
         }
 
         /// <summary>
@@ -378,11 +549,11 @@ namespace Layers.Unity
             if (!CheckInitialized("Reset")) return;
 
             // Flush pending events before clearing identity
-            _flushManager?.FlushNow();
+            Flush();
 
             // Clear identity on the Rust core
-            NativeStringHelper.ProcessResult(NativeBindings.layers_identify(""));
-            NativeStringHelper.ProcessResult(NativeBindings.layers_set_user_properties("{}"));
+            _platform.Identify("");
+            _platform.SetUserProperties("{}");
 
             _userId = null;
             LayersLogger.Log("User state reset");
@@ -397,8 +568,10 @@ namespace Layers.Unity
         {
             if (!_isInitialized) return;
 
+#if !UNITY_WEBGL || UNITY_EDITOR
             _flushManager?.StopPeriodicFlush();
             _flushManager?.FlushBlocking();
+#endif
 
 #if UNITY_IOS && !UNITY_EDITOR
             if (_configPoller != null)
@@ -407,15 +580,26 @@ namespace Layers.Unity
 #endif
 
             _configPoller?.StopPolling();
+#if !UNITY_WEBGL || UNITY_EDITOR
             DeepLinksModule.Teardown();
+#endif
 
-            NativeStringHelper.ProcessResult(NativeBindings.layers_shutdown());
+            // Destroy debug overlay if visible
+            if (_debugOverlay != null)
+            {
+                UnityEngine.Object.Destroy(_debugOverlay);
+                _debugOverlay = null;
+            }
+            DebugOverlay.ResetState();
+
+            _platform?.Shutdown();
 
             _isInitialized = false;
             _flushManager = null;
             _configPoller = null;
             _userId = null;
             _config = null;
+            _platform = null;
 
             LayersLogger.Log("Layers SDK shut down");
         }
@@ -456,8 +640,7 @@ namespace Layers.Unity
                     if (idfa != null) ctx["idfa"] = idfa;
                     if (idfv != null) ctx["idfv"] = idfv;
                     ctx["att_status"] = status.ToString().ToLowerInvariant();
-                    NativeStringHelper.ProcessResult(
-                        NativeBindings.layers_set_device_context(JsonHelper.Serialize(ctx)));
+                    _platform?.SetDeviceContext(JsonHelper.Serialize(ctx));
                 }
 
                 // Auto-set advertising consent based on ATT result
@@ -471,13 +654,174 @@ namespace Layers.Unity
             });
         }
 
+        // ── Attribution Data ─────────────────────────────────────────
+
+        /// <summary>
+        /// Store attribution data that will be included in every subsequent event
+        /// via the Rust core's DeviceContext. Values are persisted in PlayerPrefs
+        /// so they survive app restarts.
+        ///
+        /// Pass null for a parameter to clear that value.
+        ///
+        /// <c>deeplink_id</c> and <c>gclid</c> flow through DeviceContext on the
+        /// Rust core (top-level event fields), not the properties bag.
+        /// </summary>
+        /// <param name="deeplinkId">Deep link identifier for server-side attribution matching.</param>
+        /// <param name="gclid">Google Click Identifier from ad click URLs.</param>
+        public static void SetAttributionData(string deeplinkId = null, string gclid = null)
+        {
+            if (!CheckInitialized("SetAttributionData")) return;
+
+            // Update the Rust core's DeviceContext with the attribution fields.
+            // When both params are null, explicitly clear the fields in DeviceContext
+            // by sending empty strings so the Rust core removes them.
+            var ctx = new Dictionary<string, object>();
+            if (deeplinkId != null)
+                ctx["deeplink_id"] = deeplinkId;
+            if (gclid != null)
+                ctx["gclid"] = gclid;
+
+            if (ctx.Count > 0)
+            {
+                _platform.SetDeviceContext(JsonHelper.Serialize(ctx));
+            }
+            else
+            {
+                // Both params null — clear attribution from DeviceContext
+                ctx["deeplink_id"] = "";
+                ctx["gclid"] = "";
+                _platform.SetDeviceContext(JsonHelper.Serialize(ctx));
+            }
+
+            // Persist to PlayerPrefs for restore across app restarts
+            const string deeplinkIdKey = "layers_attribution_deeplink_id";
+            const string gclidKey = "layers_attribution_gclid";
+
+            if (deeplinkId != null)
+                PlayerPrefs.SetString(deeplinkIdKey, deeplinkId);
+            else
+                PlayerPrefs.DeleteKey(deeplinkIdKey);
+
+            if (gclid != null)
+                PlayerPrefs.SetString(gclidKey, gclid);
+            else
+                PlayerPrefs.DeleteKey(gclidKey);
+
+            PlayerPrefs.Save();
+
+            LayersLogger.Log(
+                $"SetAttributionData(deeplinkId={deeplinkId ?? "null"}, gclid={gclid ?? "null"})");
+        }
+
+        /// <summary>
+        /// Restore persisted attribution data from PlayerPrefs.
+        /// Called during initialization to survive app restarts.
+        /// </summary>
+        private static void RestoreAttributionData()
+        {
+            const string deeplinkIdKey = "layers_attribution_deeplink_id";
+            const string gclidKey = "layers_attribution_gclid";
+
+            string deeplinkId = PlayerPrefs.GetString(deeplinkIdKey, null);
+            string gclid = PlayerPrefs.GetString(gclidKey, null);
+
+            if (string.IsNullOrEmpty(deeplinkId)) deeplinkId = null;
+            if (string.IsNullOrEmpty(gclid)) gclid = null;
+
+            if (deeplinkId != null || gclid != null)
+            {
+                var ctx = new Dictionary<string, object>();
+                if (deeplinkId != null) ctx["deeplink_id"] = deeplinkId;
+                if (gclid != null) ctx["gclid"] = gclid;
+                _platform.SetDeviceContext(JsonHelper.Serialize(ctx));
+
+                LayersLogger.Log(
+                    $"Restored attribution data: deeplinkId={deeplinkId ?? "null"}, gclid={gclid ?? "null"}");
+            }
+        }
+
+        // ── Debug Overlay ────────────────────────────────────────────────
+
+        private static DebugOverlay _debugOverlay;
+
+        /// <summary>
+        /// Show the IMGUI debug overlay. Displays real-time SDK state including
+        /// queue depth, session ID, install ID, app ID, environment, consent,
+        /// recent events, and a "Flush Now" button.
+        ///
+        /// The overlay is draggable and auto-refreshes every 1.5 seconds.
+        /// </summary>
+        public static void ShowDebugOverlay()
+        {
+            if (_debugOverlay != null) return;
+
+            var runner = LayersRunner.Instance;
+            _debugOverlay = runner.gameObject.AddComponent<DebugOverlay>();
+            LayersLogger.Log("Debug overlay shown");
+        }
+
+        /// <summary>
+        /// Hide the IMGUI debug overlay.
+        /// Safe to call even if the overlay is not currently shown.
+        /// </summary>
+        public static void HideDebugOverlay()
+        {
+            if (_debugOverlay != null)
+            {
+                UnityEngine.Object.Destroy(_debugOverlay);
+                _debugOverlay = null;
+                LayersLogger.Log("Debug overlay hidden");
+            }
+        }
+
+        /// <summary>
+        /// Whether the debug overlay is currently visible.
+        /// </summary>
+        public static bool IsDebugOverlayVisible => _debugOverlay != null;
+
+        // ── Background Flush ────────────────────────────────────────────
+
+        /// <summary>
+        /// Enable periodic background flush using platform-specific APIs.
+        ///
+        /// On iOS, schedules a <c>BGAppRefreshTask</c> (requires Info.plist setup).
+        /// On Android, enqueues a periodic WorkManager job.
+        /// The minimum interval is 15 minutes on both platforms.
+        ///
+        /// Returns <c>true</c> if scheduling succeeded.
+        /// </summary>
+        public static bool EnableBackgroundFlush()
+        {
+            if (!CheckInitialized("EnableBackgroundFlush")) return false;
+            BackgroundFlush.EnsureReceiverExists();
+            return BackgroundFlush.Enable();
+        }
+
+        /// <summary>
+        /// Disable periodic background flush.
+        /// Safe to call even if background flush was never enabled.
+        /// </summary>
+        public static void DisableBackgroundFlush()
+        {
+            BackgroundFlush.Disable();
+        }
+
+        /// <summary>
+        /// Whether background flush is currently enabled.
+        /// </summary>
+        public static bool IsBackgroundFlushEnabled => BackgroundFlush.IsEnabled;
+
         // ── Internal Lifecycle Callbacks (called by LayersRunner) ─────────
 
         internal static void OnBackgrounded()
         {
             if (!_isInitialized) return;
             LayersLogger.Log("App backgrounded, flushing...");
+#if UNITY_WEBGL && !UNITY_EDITOR
+            _platform?.Flush();
+#else
             _flushManager?.FlushNow();
+#endif
         }
 
         internal static void OnForegrounded()
@@ -485,14 +829,20 @@ namespace Layers.Unity
             if (!_isInitialized) return;
             LayersLogger.Log("App foregrounded");
             // Trigger a remote config refresh on foreground to pick up changes
+#if !UNITY_WEBGL || UNITY_EDITOR
             _configPoller?.FetchNow();
+#endif
         }
 
         internal static void OnReconnected()
         {
             if (!_isInitialized) return;
             LayersLogger.Log("Network reconnected, flushing...");
+#if UNITY_WEBGL && !UNITY_EDITOR
+            _platform?.Flush();
+#else
             _flushManager?.FlushNow();
+#endif
         }
 
         internal static void OnQuitting()
@@ -557,7 +907,50 @@ namespace Layers.Unity
             }
 #endif
 
-            // Clipboard attribution (gated by remote config)
+            // WebGL CAPI properties and URL attribution
+#if UNITY_WEBGL && !UNITY_EDITOR
+            try
+            {
+                var webgl = _platform as WebGLPlatform;
+                if (webgl != null)
+                {
+                    // CAPI properties (_fbp, _ttp, page URL, fbc)
+                    string fbp = webgl.GetFbpCookie();
+                    if (!string.IsNullOrEmpty(fbp)) props["$fbp"] = fbp;
+
+                    string ttp = webgl.GetTtpCookie();
+                    if (!string.IsNullOrEmpty(ttp)) props["$ttp"] = ttp;
+
+                    string pageUrl = webgl.GetPageUrl();
+                    if (!string.IsNullOrEmpty(pageUrl)) props["$page_url"] = pageUrl;
+
+                    string fbc = webgl.GetFbc();
+                    if (!string.IsNullOrEmpty(fbc)) props["$fbc"] = fbc;
+
+                    // URL attribution parameters (fbclid, gclid, utm_*, referrer)
+                    string urlParamsJson = webgl.GetUrlParameters();
+                    if (!string.IsNullOrEmpty(urlParamsJson))
+                    {
+                        var urlParams = JsonHelper.Deserialize(urlParamsJson);
+                        if (urlParams != null)
+                        {
+                            foreach (var kv in urlParams)
+                            {
+                                string key = "$attribution_" + kv.Key;
+                                props[key] = kv.Value;
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                LayersLogger.Warn($"WebGL CAPI/attribution capture failed: {e.Message}");
+            }
+#endif
+
+            // Clipboard attribution (gated by remote config, not available on WebGL)
+#if !UNITY_WEBGL || UNITY_EDITOR
             try
             {
                 bool clipboardEnabled = false;
@@ -588,23 +981,19 @@ namespace Layers.Unity
             {
                 LayersLogger.Warn($"Clipboard attribution check failed: {e.Message}");
             }
+#endif
 
             Track("app_open", props);
         }
 
         /// <summary>
-        /// Determine if this is the first launch by checking a PlayerPrefs flag.
-        /// The flag is set on first call and persists across app restarts.
+        /// Determine if this is the first launch using the install event gate.
+        /// Applies 24-hour gating to suppress false first-launch events when
+        /// the SDK is added to an existing app.
         /// </summary>
         private static bool IsFirstLaunch()
         {
-            const string firstLaunchKey = "layers_first_launch_tracked";
-            if (PlayerPrefs.GetInt(firstLaunchKey, 0) == 1)
-                return false;
-
-            PlayerPrefs.SetInt(firstLaunchKey, 1);
-            PlayerPrefs.Save();
-            return true;
+            return InstallEventGate.DetermineIsFirstLaunch();
         }
 
         // ── Platform-specific Init ───────────────────────────────────────
@@ -617,8 +1006,7 @@ namespace Layers.Unity
             if (!string.IsNullOrEmpty(idfv))
             {
                 var ctx = new Dictionary<string, object> { ["idfv"] = idfv };
-                NativeStringHelper.ProcessResult(
-                    NativeBindings.layers_set_device_context(JsonHelper.Serialize(ctx)));
+                _platform.SetDeviceContext(JsonHelper.Serialize(ctx));
             }
         }
 
@@ -653,8 +1041,7 @@ namespace Layers.Unity
                         ["idfa"] = gaid,
                         ["att_status"] = isLimitAdTracking ? "denied" : "authorized"
                     };
-                    NativeStringHelper.ProcessResult(
-                        NativeBindings.layers_set_device_context(JsonHelper.Serialize(ctx)));
+                    _platform.SetDeviceContext(JsonHelper.Serialize(ctx));
 
                     if (_config != null && _config.EnableDebug)
                     {
@@ -671,8 +1058,7 @@ namespace Layers.Unity
                 {
                     var props = result.ToEventProperties();
                     string propsJson = JsonHelper.Serialize(props);
-                    NativeStringHelper.ProcessResult(
-                        NativeBindings.layers_track("install_referrer", propsJson));
+                    _platform.Track("install_referrer", propsJson);
 
                     if (_config != null && _config.EnableDebug)
                     {
@@ -682,5 +1068,30 @@ namespace Layers.Unity
             });
         }
 #endif
+
+#if UNITY_WEBGL && !UNITY_EDITOR
+        /// <summary>
+        /// WebGL-specific initialization: the jslib handles lifecycle listeners
+        /// (visibilitychange, beforeunload, online/offline), periodic flush,
+        /// and HTTP delivery via fetch/sendBeacon internally.
+        ///
+        /// CAPI properties and URL attribution are captured during
+        /// TrackAttributionSignals and merged into the app_open event.
+        ///
+        /// Deep link tracking on WebGL:
+        /// - The jslib fires a <c>deep_link_opened</c> event on init when the page
+        ///   URL contains attribution params (fbclid, gclid, ttclid, utm_*, etc.),
+        ///   matching iOS/Android DeepLinksModule cold-start behavior.
+        /// - The jslib also listens for <c>popstate</c> and <c>hashchange</c> events
+        ///   to detect SPA navigation, firing <c>deep_link_opened</c> when the new
+        ///   URL contains attribution params. A 2-second deduplication window
+        ///   prevents the same URL from firing twice.
+        /// </summary>
+        private static void InitWebGLModules()
+        {
+            LayersLogger.Log("WebGL platform initialized (jslib manages lifecycle, HTTP, and SPA deep link tracking)");
+        }
+#endif
     }
 }
+

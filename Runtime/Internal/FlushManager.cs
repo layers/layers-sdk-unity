@@ -64,6 +64,27 @@ namespace Layers.Unity.Internal
         }
 
         /// <summary>
+        /// Trigger an immediate flush with a completion callback.
+        /// The callback is invoked after the flush finishes (success or failure).
+        /// No-op (callback invoked immediately) if a flush is already in progress.
+        /// </summary>
+        internal void FlushWithCallback(System.Action onComplete)
+        {
+            if (_isFlushing)
+            {
+                onComplete?.Invoke();
+                return;
+            }
+            _runner.StartCoroutine(DrainAndSendWithCallback(onComplete));
+        }
+
+        private IEnumerator DrainAndSendWithCallback(System.Action onComplete)
+        {
+            yield return _runner.StartCoroutine(DrainAndSend());
+            onComplete?.Invoke();
+        }
+
+        /// <summary>
         /// Synchronous flush for shutdown. Drains the queue and persists events to disk
         /// via the Rust core's <c>layers_flush()</c> (which writes to the persistence
         /// layer rather than sending HTTP). This is safe to call from
