@@ -11,7 +11,7 @@ Add to your `Packages/manifest.json`:
 ```json
 {
   "dependencies": {
-    "com.layers.analytics": "https://github.com/layers/layers-sdk-unity.git#v2.1.3"
+    "com.layers.analytics": "https://github.com/layers/layers-sdk-unity.git#v2.1.4"
   }
 }
 ```
@@ -19,7 +19,7 @@ Add to your `Packages/manifest.json`:
 Or via Unity Editor: **Window > Package Manager > + > Add package from git URL**:
 
 ```
-https://github.com/layers/layers-sdk-unity.git#v2.1.3
+https://github.com/layers/layers-sdk-unity.git#v2.1.4
 ```
 
 ## Quick Start
@@ -29,42 +29,42 @@ using Layers.Unity;
 using System.Collections.Generic;
 
 // Initialize (once, e.g. in your first scene's Awake)
-Layers.Initialize(new LayersConfig
+LayersSDK.Initialize(new LayersConfig
 {
     AppId = "your-app-id",
-    Environment = LayersConfig.EnvironmentEnum.Production,
+    Environment = LayersEnvironment.Production,
     AutoTrackAppOpen = true,
     AutoTrackDeepLinks = true
 });
 
 // Track events
-Layers.Track("button_clicked", new Dictionary<string, object>
+LayersSDK.Track("button_clicked", new Dictionary<string, object>
 {
     ["button"] = "signup",
     ["screen"] = "onboarding"
 });
 
 // Screen views
-Layers.Screen("MainMenu");
+LayersSDK.Screen("MainMenu");
 
 // Identify users
-Layers.Identify("user-123");
+LayersSDK.Identify("user-123");
 
 // Set user properties
-Layers.SetUserProperties(new Dictionary<string, object>
+LayersSDK.SetUserProperties(new Dictionary<string, object>
 {
     ["plan"] = "premium",
     ["level"] = 42
 });
 
 // Set user properties (only if not already set)
-Layers.SetUserPropertiesOnce(new Dictionary<string, object>
+LayersSDK.SetUserPropertiesOnce(new Dictionary<string, object>
 {
     ["first_seen"] = "2026-03-24"
 });
 
 // Group association
-Layers.Group("org-456", new Dictionary<string, object>
+LayersSDK.Group("org-456", new Dictionary<string, object>
 {
     ["name"] = "Acme Corp"
 });
@@ -76,19 +76,19 @@ Use the `StandardEvents` class for canonical event names and typed helpers:
 
 ```csharp
 // Purchase
-Layers.Track(StandardEvents.Purchase,
+LayersSDK.Track(StandardEvents.Purchase,
     StandardEvents.PurchaseEvent(9.99, "USD", "premium_upgrade"));
 
 // Level complete
-Layers.Track(StandardEvents.LevelComplete,
+LayersSDK.Track(StandardEvents.LevelComplete,
     StandardEvents.LevelCompleteEvent("world_3", 42, 185.5));
 
 // Search
-Layers.Track(StandardEvents.Search,
+LayersSDK.Track(StandardEvents.Search,
     StandardEvents.SearchEvent("blue sword", resultCount: 12));
 
 // Login
-Layers.Track(StandardEvents.Login,
+LayersSDK.Track(StandardEvents.Login,
     StandardEvents.LoginEvent("google"));
 ```
 
@@ -149,14 +149,14 @@ if (ATTModule.IsAvailable())
 {
     ATTModule.RequestTracking((status) =>
     {
-        if (status == ATTStatus.Authorized)
+        if (status == LayersATTStatus.Authorized)
         {
             var idfa = ATTModule.GetIDFA();
-            Layers.SetConsent(analytics: true, advertising: true);
+            LayersSDK.SetConsent(analytics: true, advertising: true);
         }
         else
         {
-            Layers.SetConsent(analytics: true, advertising: false);
+            LayersSDK.SetConsent(analytics: true, advertising: false);
         }
     });
 }
@@ -219,7 +219,7 @@ AndroidModule.GetInstallReferrer((result) =>
     Debug.Log($"Campaign: {result.UtmCampaign}");
 
     // Track as event properties
-    Layers.Track("install_referrer", result.ToEventProperties());
+    LayersSDK.Track("install_referrer", result.ToEventProperties());
 });
 #endif
 ```
@@ -228,10 +228,10 @@ AndroidModule.GetInstallReferrer((result) =>
 
 ```csharp
 // Grant all
-Layers.SetConsent(analytics: true, advertising: true, thirdPartySharing: true);
+LayersSDK.SetConsent(analytics: true, advertising: true, thirdPartySharing: true);
 
 // Analytics only (no ads, no sharing)
-Layers.SetConsent(analytics: true, advertising: false, thirdPartySharing: false);
+LayersSDK.SetConsent(analytics: true, advertising: false, thirdPartySharing: false);
 ```
 
 ## Debug Overlay
@@ -240,8 +240,8 @@ Enable an in-game overlay showing SDK state, queue depth, and recent events:
 
 ```csharp
 // Toggle via code
-Layers.EnableDebugOverlay();
-Layers.DisableDebugOverlay();
+LayersSDK.EnableDebugOverlay();
+LayersSDK.DisableDebugOverlay();
 ```
 
 ## Flush and Shutdown
@@ -250,16 +250,16 @@ Events are flushed automatically on a timer and on app background. Manual contro
 
 ```csharp
 // Flush now
-Layers.Flush();
+LayersSDK.Flush();
 
 // Shutdown (also called automatically on Application.quitting)
-Layers.Shutdown();
+LayersSDK.Shutdown();
 ```
 
 ## Error Handling
 
 ```csharp
-Layers.OnError += (message) =>
+LayersSDK.OnError += (message) =>
 {
     Debug.LogWarning($"Layers SDK error: {message}");
 };
@@ -273,7 +273,7 @@ Layers.OnError += (message) =>
 | `Environment`        | `Development`           | `Development`, `Staging`, or `Production` |
 | `BaseUrl`            | `https://in.layers.com` | Ingest endpoint override                  |
 | `EnableDebug`        | `false`                 | Verbose console logging                   |
-| `FlushIntervalMs`    | `10000`                 | Auto-flush interval (ms)                  |
+| `FlushIntervalMs`    | `30000`                 | Auto-flush interval (ms)                  |
 | `FlushThreshold`     | `20`                    | Events queued before auto-flush           |
 | `MaxQueueSize`       | `10000`                 | Max events before dropping                |
 | `MaxBatchSize`       | `20`                    | Events per HTTP batch                     |

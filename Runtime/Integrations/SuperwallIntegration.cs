@@ -24,13 +24,13 @@ namespace Layers.Unity
     /// Provides static methods to forward paywall lifecycle events to Layers
     /// without requiring a hard dependency on the Superwall Unity SDK.
     ///
-    /// Each method calls <see cref="Layers.Track"/> with appropriate event names:
+    /// Each method calls <see cref="LayersSDK.Track"/> with appropriate event names:
     /// <c>paywall_show</c>, <c>paywall_dismiss</c>, <c>paywall_purchase</c>, <c>paywall_skip</c>.
     /// </summary>
     public static class SuperwallIntegration
     {
         /// <summary>
-        /// Track a generic Superwall event. Forwards to <see cref="Layers.Track"/>
+        /// Track a generic Superwall event. Forwards to <see cref="LayersSDK.Track"/>
         /// with the given event name and optional properties.
         /// </summary>
         /// <param name="eventName">The Superwall event name (e.g., "paywall_open").</param>
@@ -41,7 +41,7 @@ namespace Layers.Unity
 
             try
             {
-                Layers.Track(eventName, properties);
+                LayersSDK.Track(eventName, properties);
             }
             catch (System.Exception e)
             {
@@ -81,7 +81,7 @@ namespace Layers.Unity
                     props["ab_test"] = abTest;
                 }
 
-                Layers.Track("paywall_show", props);
+                LayersSDK.Track("paywall_show", props);
             }
             catch (System.Exception e)
             {
@@ -98,7 +98,7 @@ namespace Layers.Unity
         {
             try
             {
-                Layers.Track("paywall_dismiss", new Dictionary<string, object>
+                LayersSDK.Track("paywall_dismiss", new Dictionary<string, object>
                 {
                     ["paywall_id"] = paywallId ?? "unknown"
                 });
@@ -138,7 +138,7 @@ namespace Layers.Unity
                 if (!string.IsNullOrEmpty(currency))
                     props["currency"] = currency;
 
-                Layers.Track("paywall_purchase", props);
+                LayersSDK.Track("paywall_purchase", props);
             }
             catch (System.Exception e)
             {
@@ -156,7 +156,7 @@ namespace Layers.Unity
         {
             try
             {
-                Layers.Track("paywall_skip", new Dictionary<string, object>
+                LayersSDK.Track("paywall_skip", new Dictionary<string, object>
                 {
                     ["paywall_id"] = paywallId ?? "unknown",
                     ["reason"] = reason ?? "unknown"
@@ -183,11 +183,11 @@ namespace Layers.Unity
 
             try
             {
-                string sessionId = Layers.SessionId;
+                string sessionId = LayersSDK.SessionId;
                 if (!string.IsNullOrEmpty(sessionId))
                     attrs["layers_session_id"] = sessionId;
 
-                string userId = Layers.UserId;
+                string userId = LayersSDK.UserId;
                 if (!string.IsNullOrEmpty(userId))
                     attrs["layers_user_id"] = userId;
             }

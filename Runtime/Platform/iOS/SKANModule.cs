@@ -253,7 +253,7 @@ namespace Layers.Unity
         /// a higher conversion value than the current value, SKAN is updated.
         /// Conversion values only increase (never decrease), matching SKAN semantics.
         ///
-        /// Call this after every <see cref="Layers.Track"/> call when SKAN rules are
+        /// Call this after every <see cref="LayersSDK.Track"/> call when SKAN rules are
         /// active. The SDK wires this up automatically when auto-config is enabled.
         /// </summary>
         /// <param name="eventName">The event name.</param>

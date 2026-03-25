@@ -7,7 +7,7 @@ namespace Layers.Unity
     ///
     /// Provides typed helper methods for purchase, subscription, cart, checkout,
     /// product view, and refund events. All methods delegate to
-    /// <see cref="Layers.Track"/> with standardized event names and properties
+    /// <see cref="LayersSDK.Track"/> with standardized event names and properties
     /// consistent with the iOS CommerceModule, Android CommerceModule, Web commerce
     /// module, and React Native commerce helpers.
     ///
@@ -57,7 +57,7 @@ namespace Layers.Unity
             if (isRestored) props["is_restored"] = true;
             if (store != null) props["store"] = store;
 
-            Layers.Track("purchase_success", props);
+            LayersSDK.Track("purchase_success", props);
         }
 
         /// <summary>
@@ -82,7 +82,7 @@ namespace Layers.Unity
             if (errorCode != null) props["error_code"] = errorCode;
             if (errorMessage != null) props["error_message"] = errorMessage;
 
-            Layers.Track("purchase_failed", props);
+            LayersSDK.Track("purchase_failed", props);
         }
 
         // ── Subscription Tracking ───────────────────────────────────────
@@ -126,7 +126,7 @@ namespace Layers.Unity
             if (subscriptionGroupId != null) props["subscription_group_id"] = subscriptionGroupId;
             if (originalTransactionId != null) props["original_transaction_id"] = originalTransactionId;
 
-            Layers.Track("subscribe", props);
+            LayersSDK.Track("subscribe", props);
         }
 
         // ── Order Tracking ──────────────────────────────────────────────
@@ -172,7 +172,7 @@ namespace Layers.Unity
             if (couponCode != null) props["coupon_code"] = couponCode;
             if (itemCount.HasValue) props["item_count"] = itemCount.Value;
 
-            Layers.Track("purchase_success", props);
+            LayersSDK.Track("purchase_success", props);
         }
 
         // ── Cart Tracking ───────────────────────────────────────────────
@@ -203,7 +203,7 @@ namespace Layers.Unity
 
             if (category != null) props["category"] = category;
 
-            Layers.Track("add_to_cart", props);
+            LayersSDK.Track("add_to_cart", props);
         }
 
         /// <summary>
@@ -231,7 +231,7 @@ namespace Layers.Unity
 
             if (category != null) props["category"] = category;
 
-            Layers.Track("remove_from_cart", props);
+            LayersSDK.Track("remove_from_cart", props);
         }
 
         // ── Checkout Tracking ───────────────────────────────────────────
@@ -255,7 +255,7 @@ namespace Layers.Unity
 
             if (itemCount.HasValue) props["item_count"] = itemCount.Value;
 
-            Layers.Track("begin_checkout", props);
+            LayersSDK.Track("begin_checkout", props);
         }
 
         // ── Product View Tracking ───────────────────────────────────────
@@ -285,7 +285,7 @@ namespace Layers.Unity
 
             if (category != null) props["category"] = category;
 
-            Layers.Track("view_item", props);
+            LayersSDK.Track("view_item", props);
         }
 
         // ── Refund Tracking ─────────────────────────────────────────────
@@ -312,7 +312,7 @@ namespace Layers.Unity
 
             if (reason != null) props["reason"] = reason;
 
-            Layers.Track("refund", props);
+            LayersSDK.Track("refund", props);
         }
     }
 }

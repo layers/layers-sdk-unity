@@ -19,10 +19,10 @@ namespace Layers.Unity
     ///
     /// Usage:
     /// <code>
-    /// Layers.Initialize(new LayersConfig { AppId = "your-app-id" });
-    /// Layers.Track("button_clicked", new Dictionary&lt;string, object&gt; { ["button"] = "signup" });
-    /// Layers.Identify("user-123");
-    /// Layers.Flush();
+    /// LayersSDK.Initialize(new LayersConfig { AppId = "your-app-id" });
+    /// LayersSDK.Track("button_clicked", new Dictionary&lt;string, object&gt; { ["button"] = "signup" });
+    /// LayersSDK.Identify("user-123");
+    /// LayersSDK.Flush();
     /// </code>
     ///
     /// Lifecycle is managed automatically via <see cref="LayersRunner"/>:
@@ -30,7 +30,7 @@ namespace Layers.Unity
     /// - Foreground: resumes periodic flush
     /// - Quit: synchronous shutdown with persistence
     /// </summary>
-    public static class Layers
+    public static class LayersSDK
     {
         // ── Constants ────────────────────────────────────────────────────
 
@@ -615,11 +615,11 @@ namespace Layers.Unity
         /// - Updates device context with the identifiers
         /// - Sets advertising consent based on the ATT result
         ///
-        /// The callback receives the resulting <see cref="ATTStatus"/>.
-        /// On non-iOS platforms, the callback receives <see cref="ATTStatus.NotDetermined"/>.
+        /// The callback receives the resulting <see cref="LayersATTStatus"/>.
+        /// On non-iOS platforms, the callback receives <see cref="LayersATTStatus.NotDetermined"/>.
         /// </summary>
         /// <param name="callback">Called with the ATT status after the user responds.</param>
-        public static void RequestTrackingPermission(Action<ATTStatus> callback = null)
+        public static void RequestTrackingPermission(Action<LayersATTStatus> callback = null)
         {
             if (!CheckInitialized("RequestTrackingPermission")) return;
 
@@ -630,7 +630,7 @@ namespace Layers.Unity
 
                 // Collect IDFA only when authorized
                 string idfa = null;
-                if (status == ATTStatus.Authorized)
+                if (status == LayersATTStatus.Authorized)
                     idfa = ATTModule.GetAdvertisingId();
 
                 // Update device context with identifiers
@@ -644,7 +644,7 @@ namespace Layers.Unity
                 }
 
                 // Auto-set advertising consent based on ATT result
-                bool advertisingAllowed = status == ATTStatus.Authorized;
+                bool advertisingAllowed = status == LayersATTStatus.Authorized;
                 SetConsent(advertising: advertisingAllowed);
 
                 LayersLogger.Log(
@@ -855,7 +855,7 @@ namespace Layers.Unity
         private static bool CheckInitialized(string method)
         {
             if (_isInitialized) return true;
-            RaiseError(method, "Layers SDK not initialized. Call Layers.Initialize() first.");
+            RaiseError(method, "Layers SDK not initialized. Call LayersSDK.Initialize() first.");
             return false;
         }
 

@@ -5,7 +5,7 @@
 // Uses Unity's OnGUI() system for maximum compatibility (works in
 // all render pipelines, no Canvas or EventSystem required).
 //
-// Toggle via Layers.ShowDebugOverlay() / Layers.HideDebugOverlay().
+// Toggle via LayersSDK.ShowDebugOverlay() / LayersSDK.HideDebugOverlay().
 
 using System;
 using System.Collections.Generic;
@@ -23,8 +23,8 @@ namespace Layers.Unity
     /// Auto-refreshes every 1.5 seconds.
     ///
     /// This component is added to the [Layers] hidden GameObject and is
-    /// toggled via <see cref="Layers.ShowDebugOverlay"/> and
-    /// <see cref="Layers.HideDebugOverlay"/>.
+    /// toggled via <see cref="LayersSDK.ShowDebugOverlay"/> and
+    /// <see cref="LayersSDK.HideDebugOverlay"/>.
     /// </summary>
     internal class DebugOverlay : MonoBehaviour
     {
@@ -63,7 +63,7 @@ namespace Layers.Unity
         private GUIStyle _buttonStyle;
         private bool _stylesInitialized;
 
-        // ── Static Event Recording (called by Layers.Track) ─────────────
+        // ── Static Event Recording (called by LayersSDK.Track) ────────────
 
         /// <summary>
         /// Record a tracked event for display in the debug overlay.
@@ -223,9 +223,9 @@ namespace Layers.Unity
             GUILayout.Space(4);
             if (GUILayout.Button("Flush Now", _buttonStyle, GUILayout.Height(28)))
             {
-                if (Layers.IsInitialized)
+                if (LayersSDK.IsInitialized)
                 {
-                    Layers.Flush();
+                    LayersSDK.Flush();
                     RefreshData();
                 }
             }
@@ -246,13 +246,13 @@ namespace Layers.Unity
 
         private void RefreshData()
         {
-            _sdkInitialized = Layers.IsInitialized;
+            _sdkInitialized = LayersSDK.IsInitialized;
 
             if (_sdkInitialized)
             {
-                string sessionId = Layers.SessionId;
+                string sessionId = LayersSDK.SessionId;
                 _sessionId = TruncateId(sessionId);
-                _queueDepth = Layers.QueueDepth;
+                _queueDepth = LayersSDK.QueueDepth;
             }
             else
             {
@@ -260,16 +260,16 @@ namespace Layers.Unity
                 _queueDepth = 0;
             }
 
-            _userId = string.IsNullOrEmpty(Layers.UserId) ? "(anonymous)" : Layers.UserId;
+            _userId = string.IsNullOrEmpty(LayersSDK.UserId) ? "(anonymous)" : LayersSDK.UserId;
             _installId = TruncateId(InstallIdProvider.GetOrCreate());
             _lastFlush = _lastFlushInfo ?? "never";
 
-            // Read config state via internal accessors on the Layers facade
-            _environment = Layers.Environment ?? "--";
-            _appId = Layers.AppId ?? "--";
+            // Read config state via internal accessors on the LayersSDK facade
+            _environment = LayersSDK.Environment ?? "--";
+            _appId = LayersSDK.AppId ?? "--";
 
             // Read consent from the Rust core's remote config if available
-            string remoteConfig = Layers.RemoteConfig;
+            string remoteConfig = LayersSDK.RemoteConfig;
             if (!string.IsNullOrEmpty(remoteConfig))
             {
                 try

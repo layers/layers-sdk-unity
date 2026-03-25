@@ -27,8 +27,8 @@ namespace Layers.Unity.Internal
     /// Background flush controller. Schedules platform-specific background tasks
     /// to flush queued events when the app is not in the foreground.
     ///
-    /// Toggle via <see cref="Layers.EnableBackgroundFlush"/> and
-    /// <see cref="Layers.DisableBackgroundFlush"/>.
+    /// Toggle via <see cref="LayersSDK.EnableBackgroundFlush"/> and
+    /// <see cref="LayersSDK.DisableBackgroundFlush"/>.
     /// </summary>
     internal class BackgroundFlush : MonoBehaviour
     {
@@ -114,14 +114,14 @@ namespace Layers.Unity.Internal
         // ReSharper disable once UnusedMember.Local -- called via UnitySendMessage
         private void OnBackgroundFlush(string message)
         {
-            if (Layers.IsInitialized)
+            if (LayersSDK.IsInitialized)
             {
                 LayersLogger.Log("Background flush triggered (iOS)");
 
                 // Use callback-based flush so we only signal completion AFTER
                 // the HTTP request finishes. Without this, iOS may suspend
                 // the app before events are actually delivered.
-                Layers.FlushWithCallback(() =>
+                LayersSDK.FlushWithCallback(() =>
                 {
 #if UNITY_IOS && !UNITY_EDITOR
                     try

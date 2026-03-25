@@ -66,7 +66,7 @@ namespace Layers.Unity
 #endif
                 }
 
-                Layers.Track("purchase_success", new Dictionary<string, object>
+                LayersSDK.Track("purchase_success", new Dictionary<string, object>
                 {
                     ["product_id"] = productId,
                     ["price"] = price,
@@ -83,7 +83,7 @@ namespace Layers.Unity
 
         /// <summary>
         /// Sync user attributes (subscriber status, original app user ID) to Layers.
-        /// Calls <see cref="Layers.SetUserProperties"/> with <c>is_subscriber</c> and
+        /// Calls <see cref="LayersSDK.SetUserProperties"/> with <c>is_subscriber</c> and
         /// optionally <c>revenuecat_original_app_user_id</c>.
         /// </summary>
         /// <param name="isSubscriber">Whether the user has any active subscriptions.</param>
@@ -100,7 +100,7 @@ namespace Layers.Unity
                 if (!string.IsNullOrEmpty(originalAppUserId))
                     props["revenuecat_original_app_user_id"] = originalAppUserId;
 
-                Layers.SetUserProperties(props);
+                LayersSDK.SetUserProperties(props);
             }
             catch (Exception e)
             {
@@ -148,7 +148,7 @@ namespace Layers.Unity
                     {
                         if (!_activeSubscriptions.Contains(productId))
                         {
-                            Layers.Track("subscription_start", new Dictionary<string, object>
+                            LayersSDK.Track("subscription_start", new Dictionary<string, object>
                             {
                                 ["product_id"] = productId,
                                 ["source"] = "revenuecat"

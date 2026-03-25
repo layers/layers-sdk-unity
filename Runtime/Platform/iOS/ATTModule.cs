@@ -14,7 +14,7 @@ namespace Layers.Unity
     /// <summary>
     /// ATT authorization status values matching Apple's ATTrackingManager.AuthorizationStatus.
     /// </summary>
-    public enum ATTStatus
+    public enum LayersATTStatus
     {
         /// <summary>User has not yet been prompted.</summary>
         NotDetermined = 0,
@@ -40,7 +40,7 @@ namespace Layers.Unity
         // Delegate type matching the native callback signature.
         private delegate void ATTCallbackDelegate(int status);
 
-        private static Action<ATTStatus> _pendingCallback;
+        private static Action<LayersATTStatus> _pendingCallback;
 
 #if UNITY_IOS && !UNITY_EDITOR
         [DllImport("__Internal")]
@@ -76,12 +76,12 @@ namespace Layers.Unity
         /// Get the current ATT authorization status without prompting the user.
         /// </summary>
         /// <returns>The current authorization status.</returns>
-        public static ATTStatus GetStatus()
+        public static LayersATTStatus GetStatus()
         {
 #if UNITY_IOS && !UNITY_EDITOR
-            return (ATTStatus)layers_att_get_status();
+            return (LayersATTStatus)layers_att_get_status();
 #else
-            return ATTStatus.NotDetermined;
+            return LayersATTStatus.NotDetermined;
 #endif
         }
 
@@ -91,14 +91,14 @@ namespace Layers.Unity
         /// If the user has already responded, returns the existing status without showing the dialog.
         /// The callback is invoked on the main thread.
         /// </summary>
-        /// <param name="callback">Called with the resulting ATTStatus when the user responds or if already determined.</param>
-        public static void RequestTracking(Action<ATTStatus> callback)
+        /// <param name="callback">Called with the resulting LayersATTStatus when the user responds or if already determined.</param>
+        public static void RequestTracking(Action<LayersATTStatus> callback)
         {
 #if UNITY_IOS && !UNITY_EDITOR
             _pendingCallback = callback;
             layers_att_request_tracking(OnNativeTrackingResult);
 #else
-            callback?.Invoke(ATTStatus.NotDetermined);
+            callback?.Invoke(LayersATTStatus.NotDetermined);
 #endif
         }
 
@@ -153,7 +153,7 @@ namespace Layers.Unity
         /// <returns>True if the status is anything other than NotDetermined.</returns>
         public static bool HasBeenPrompted()
         {
-            return GetStatus() != ATTStatus.NotDetermined;
+            return GetStatus() != LayersATTStatus.NotDetermined;
         }
 
         // Native callback — must be static, decorated with MonoPInvokeCallback,
@@ -161,7 +161,7 @@ namespace Layers.Unity
         [MonoPInvokeCallback(typeof(ATTCallbackDelegate))]
         private static void OnNativeTrackingResult(int status)
         {
-            var attStatus = (ATTStatus)status;
+            var attStatus = (LayersATTStatus)status;
             var callback = _pendingCallback;
             _pendingCallback = null;
             callback?.Invoke(attStatus);

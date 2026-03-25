@@ -11,8 +11,8 @@ namespace Layers.Unity
     ///
     /// Usage:
     /// <code>
-    /// Layers.Track(StandardEvents.Purchase, StandardEvents.PurchaseEvent(9.99, "USD", "premium"));
-    /// Layers.Track(StandardEvents.Login, StandardEvents.LoginEvent("google"));
+    /// LayersSDK.Track(StandardEvents.Purchase, StandardEvents.PurchaseEvent(9.99, "USD", "premium"));
+    /// LayersSDK.Track(StandardEvents.Login, StandardEvents.LoginEvent("google"));
     /// </code>
     /// </summary>
     public static class StandardEvents

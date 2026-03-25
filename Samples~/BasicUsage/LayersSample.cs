@@ -48,10 +48,10 @@ public class LayersSample : MonoBehaviour
         if (!string.IsNullOrEmpty(baseUrl))
             config.BaseUrl = baseUrl;
 
-        Layers.Initialize(config);
+        LayersSDK.Initialize(config);
 
         // ── Error handling ──────────────────────────────────────────
-        Layers.OnError += (method, error) =>
+        LayersSDK.OnError += (method, error) =>
             Debug.LogWarning($"[LayersSample] Layers error in {method}: {error}");
 
         // ── Deep link listener ──────────────────────────────────────
@@ -70,7 +70,7 @@ public class LayersSample : MonoBehaviour
         };
 
         // ── Track a custom event ────────────────────────────────────
-        Layers.Track("game_started", new Dictionary<string, object>
+        LayersSDK.Track("game_started", new Dictionary<string, object>
         {
             ["level"] = 1,
             ["difficulty"] = "normal",
@@ -78,13 +78,13 @@ public class LayersSample : MonoBehaviour
         });
 
         // ── Track a screen view ─────────────────────────────────────
-        Layers.Screen("MainMenu");
+        LayersSDK.Screen("MainMenu");
 
         // ── Identify user ───────────────────────────────────────────
-        Layers.Identify("user-123");
+        LayersSDK.Identify("user-123");
 
         // ── Set user properties ─────────────────────────────────────
-        Layers.SetUserProperties(new Dictionary<string, object>
+        LayersSDK.SetUserProperties(new Dictionary<string, object>
         {
             ["plan"] = "premium",
             ["signup_date"] = "2024-01-15",
@@ -92,22 +92,22 @@ public class LayersSample : MonoBehaviour
         });
 
         // ── Set user properties once (only set if not already set) ──
-        Layers.SetUserPropertiesOnce(new Dictionary<string, object>
+        LayersSDK.SetUserPropertiesOnce(new Dictionary<string, object>
         {
             ["first_seen"] = System.DateTime.UtcNow.ToString("o"),
             ["initial_platform"] = "unity"
         });
 
         // ── Set consent ─────────────────────────────────────────────
-        Layers.SetConsent(analytics: true, advertising: false);
+        LayersSDK.SetConsent(analytics: true, advertising: false);
 
         // ── Request ATT (iOS only - no-op on Android/Editor) ────────
         ATTModule.RequestTracking((status) =>
         {
             Debug.Log($"[LayersSample] ATT status: {status}");
-            if (status == ATTStatus.Authorized)
+            if (status == LayersATTStatus.Authorized)
             {
-                Layers.SetConsent(advertising: true);
+                LayersSDK.SetConsent(advertising: true);
                 Debug.Log("[LayersSample] Advertising consent granted via ATT");
             }
         });
@@ -121,7 +121,7 @@ public class LayersSample : MonoBehaviour
     /// </summary>
     public void TrackPurchase(string itemId, double price, string currency)
     {
-        Layers.Track("purchase", new Dictionary<string, object>
+        LayersSDK.Track("purchase", new Dictionary<string, object>
         {
             ["item_id"] = itemId,
             ["price"] = price,
@@ -134,11 +134,11 @@ public class LayersSample : MonoBehaviour
     /// </summary>
     public void TrackLevelComplete(int level, float timeSeconds)
     {
-        Layers.Track("level_complete", new Dictionary<string, object>
+        LayersSDK.Track("level_complete", new Dictionary<string, object>
         {
             ["level"] = level,
             ["time_seconds"] = timeSeconds,
-            ["user_id"] = Layers.UserId
+            ["user_id"] = LayersSDK.UserId
         });
     }
 
@@ -147,7 +147,7 @@ public class LayersSample : MonoBehaviour
     /// </summary>
     public void FlushEvents()
     {
-        Layers.Flush();
+        LayersSDK.Flush();
     }
 
     /// <summary>
@@ -155,12 +155,12 @@ public class LayersSample : MonoBehaviour
     /// </summary>
     public void OnLogout()
     {
-        Layers.Reset();
+        LayersSDK.Reset();
         Debug.Log("[LayersSample] User state reset");
     }
 
     void OnDestroy()
     {
-        Layers.Shutdown();
+        LayersSDK.Shutdown();
     }
 }

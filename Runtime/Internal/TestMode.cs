@@ -16,13 +16,13 @@ namespace Layers.Unity.Internal
     /// public void SetUp()
     /// {
     ///     LayersTestMode.Enable();
-    ///     Layers.Initialize(new LayersConfig { AppId = "test-app" });
+    ///     LayersSDK.Initialize(new LayersConfig { AppId = "test-app" });
     /// }
     ///
     /// [TearDown]
     /// public void TearDown()
     /// {
-    ///     Layers.Shutdown();
+    ///     LayersSDK.Shutdown();
     ///     LayersTestMode.Disable();
     /// }
     /// </code>
