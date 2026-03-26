@@ -144,6 +144,10 @@ namespace Layers.Unity
 
             if (data == null) return;
 
+            // Persist click IDs from the deep link so they flow into all
+            // subsequent events via DeviceContext (matches iOS/Android behavior).
+            PersistClickIds(data.Attribution);
+
             // Auto-track deep_link_opened event via Rust core
             if (s_enabled)
             {
@@ -218,6 +222,40 @@ namespace Layers.Unity
             else if (s_enableDebug)
             {
                 Debug.Log($"[Layers] auto-tracked deep_link_opened: {data.RawUrl}");
+            }
+        }
+
+        // ── Click ID Persistence ─────────────────────────────────────
+
+        /// <summary>
+        /// Persist click IDs extracted from the deep link URL via
+        /// <see cref="LayersSDK.SetAttributionData"/> so they are included
+        /// in all subsequent events via DeviceContext.
+        /// Preserves the existing deeplinkId to avoid clearing a previously-set value.
+        /// </summary>
+        private static void PersistClickIds(AttributionData attr)
+        {
+            if (attr == null) return;
+
+            // Only call SetAttributionData if at least one click ID is present
+            bool hasAny = !string.IsNullOrEmpty(attr.Gclid) ||
+                          !string.IsNullOrEmpty(attr.Fbclid) ||
+                          !string.IsNullOrEmpty(attr.Ttclid) ||
+                          !string.IsNullOrEmpty(attr.Msclkid);
+
+            if (!hasAny) return;
+
+            LayersSDK.SetAttributionData(
+                deeplinkId: LayersSDK.DeeplinkId,
+                gclid: !string.IsNullOrEmpty(attr.Gclid) ? attr.Gclid : LayersSDK.Gclid,
+                fbclid: !string.IsNullOrEmpty(attr.Fbclid) ? attr.Fbclid : LayersSDK.Fbclid,
+                ttclid: !string.IsNullOrEmpty(attr.Ttclid) ? attr.Ttclid : LayersSDK.Ttclid,
+                msclkid: !string.IsNullOrEmpty(attr.Msclkid) ? attr.Msclkid : LayersSDK.Msclkid
+            );
+
+            if (s_enableDebug)
+            {
+                Debug.Log("[Layers] DeepLinksModule persisted click IDs from deep link URL");
             }
         }
 

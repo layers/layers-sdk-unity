@@ -11,7 +11,7 @@ Add to your `Packages/manifest.json`:
 ```json
 {
   "dependencies": {
-    "com.layers.analytics": "https://github.com/layers/layers-sdk-unity.git#v2.1.5"
+    "com.layers.analytics": "https://github.com/layers/layers-sdk-unity.git#v2.1.6"
   }
 }
 ```
@@ -19,7 +19,7 @@ Add to your `Packages/manifest.json`:
 Or via Unity Editor: **Window > Package Manager > + > Add package from git URL**:
 
 ```
-https://github.com/layers/layers-sdk-unity.git#v2.1.5
+https://github.com/layers/layers-sdk-unity.git#v2.1.6
 ```
 
 ## Quick Start

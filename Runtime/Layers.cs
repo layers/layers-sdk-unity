@@ -1,8 +1,11 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Text;
 using Layers.Unity.Internal;
 using UnityEngine;
+using UnityEngine.Networking;
 
 namespace Layers.Unity
 {
@@ -296,7 +299,10 @@ namespace Layers.Unity
                 return;
             }
 
-            string propsJson = properties != null ? JsonHelper.Serialize(properties) : null;
+            // Merge stored click IDs into event properties so attribution
+            // data flows through to the server (matching Kotlin/Swift SDKs).
+            var merged = MergeAttributionProperties(properties);
+            string propsJson = merged != null ? JsonHelper.Serialize(merged) : null;
 
             // Queue depth gating: verify the Rust core actually accepted the event.
             // Skipped on WebGL because the jslib may buffer events in the pre-init
@@ -351,7 +357,10 @@ namespace Layers.Unity
                 return;
             }
 
-            string propsJson = properties != null ? JsonHelper.Serialize(properties) : null;
+            // Merge stored click IDs into event properties so attribution
+            // data flows through to the server (matching Kotlin/Swift SDKs).
+            var merged = MergeAttributionProperties(properties);
+            string propsJson = merged != null ? JsonHelper.Serialize(merged) : null;
 
             // Queue depth gating: verify the Rust core actually accepted the event.
             // Skipped on WebGL because the jslib may buffer events in the pre-init
@@ -423,6 +432,8 @@ namespace Layers.Unity
 
             if (error != null)
                 RaiseError("SetUserProperties", error);
+            else
+                SendUserPropertiesAsync(properties, setOnce: false);
         }
 
         /// <summary>
@@ -446,6 +457,67 @@ namespace Layers.Unity
 
             if (error != null)
                 RaiseError("SetUserPropertiesOnce", error);
+            else
+                SendUserPropertiesAsync(properties, setOnce: true);
+        }
+
+        // ── User Properties HTTP POST ────────────────────────────────
+
+        /// <summary>
+        /// Fire-and-forget POST to /users/properties.
+        /// Matches the pattern from Web, Node, and React Native SDKs.
+        /// Best-effort: errors are logged but not propagated.
+        /// </summary>
+        private static void SendUserPropertiesAsync(
+            Dictionary<string, object> properties, bool setOnce)
+        {
+            if (_config == null) return;
+
+            string baseUrl = !string.IsNullOrEmpty(_config?.BaseUrl)
+                ? _config.BaseUrl.TrimEnd('/')
+                : "https://in.layers.com";
+
+            string appUserId = _userId ?? InstallIdProvider.GetOrCreate();
+
+            var payload = new Dictionary<string, object>
+            {
+                ["app_id"] = _config.AppId,
+                ["app_user_id"] = appUserId,
+                ["properties"] = properties,
+                ["timestamp"] = DateTime.UtcNow.ToString("o")
+            };
+            if (setOnce)
+            {
+                payload["set_once"] = true;
+            }
+
+            string url = $"{baseUrl}/users/properties";
+            string body = JsonHelper.Serialize(payload);
+
+            LayersRunner.Instance.StartCoroutine(PostUserProperties(url, body));
+        }
+
+        private static IEnumerator PostUserProperties(string url, string body)
+        {
+            byte[] bodyRaw = Encoding.UTF8.GetBytes(body);
+
+            using (var request = new UnityWebRequest(url, UnityWebRequest.kHttpVerbPOST))
+            {
+                request.uploadHandler = new UploadHandlerRaw(bodyRaw);
+                request.downloadHandler = new DownloadHandlerBuffer();
+                request.SetRequestHeader("Content-Type", "application/json");
+                request.SetRequestHeader("X-App-Id", _config.AppId);
+                request.SetRequestHeader("X-SDK-Version", $"unity/{SdkVersion}");
+                request.timeout = 10;
+
+                yield return request.SendWebRequest();
+
+                if (request.result != UnityWebRequest.Result.Success)
+                {
+                    LayersLogger.Warn(
+                        $"User properties POST failed (HTTP {request.responseCode}): {request.error}");
+                }
+            }
         }
 
         // ── Group ────────────────────────────────────────────────────
@@ -598,6 +670,12 @@ namespace Layers.Unity
             _flushManager = null;
             _configPoller = null;
             _userId = null;
+            _deeplinkId = null;
+            _gclid = null;
+            _fbclid = null;
+            _fbc = null;
+            _ttclid = null;
+            _msclkid = null;
             _config = null;
             _platform = null;
 
@@ -656,30 +734,81 @@ namespace Layers.Unity
 
         // ── Attribution Data ─────────────────────────────────────────
 
+        // PlayerPrefs keys for attribution persistence
+        private static string _deeplinkId;
+        /// <summary>
+        /// The current deep link ID, or null if not set. Used internally by
+        /// DeepLinksModule to preserve the value when persisting click IDs.
+        /// </summary>
+        internal static string DeeplinkId => _deeplinkId;
+        private const string PrefDeeplinkId = "layers_attribution_deeplink_id";
+        private const string PrefGclid = "layers_attribution_gclid";
+        private const string PrefFbclid = "layers_attribution_fbclid";
+        private const string PrefFbc = "layers_attribution_fbc";
+        private const string PrefTtclid = "layers_attribution_ttclid";
+        private const string PrefMsclkid = "layers_attribution_msclkid";
+
+        // In-memory cache of click IDs for merging into event properties
+        private static string _gclid;
+        internal static string Gclid => _gclid;
+        private static string _fbclid;
+        internal static string Fbclid => _fbclid;
+        private static string _fbc;
+        private static string _ttclid;
+        internal static string Ttclid => _ttclid;
+        private static string _msclkid;
+        internal static string Msclkid => _msclkid;
+
         /// <summary>
         /// Store attribution data that will be included in every subsequent event
         /// via the Rust core's DeviceContext. Values are persisted in PlayerPrefs
         /// so they survive app restarts.
         ///
-        /// Pass null for a parameter to clear that value.
+        /// Pass null for a parameter to leave that value unchanged.
         ///
         /// <c>deeplink_id</c> and <c>gclid</c> flow through DeviceContext on the
         /// Rust core (top-level event fields), not the properties bag.
+        /// When <c>fbclid</c> is set, a composite <c>fbc</c> value is computed:
+        /// <c>fb.1.{unix_ms}.{fbclid}</c>.
         /// </summary>
         /// <param name="deeplinkId">Deep link identifier for server-side attribution matching.</param>
         /// <param name="gclid">Google Click Identifier from ad click URLs.</param>
-        public static void SetAttributionData(string deeplinkId = null, string gclid = null)
+        /// <param name="fbclid">Facebook Click Identifier from ad click URLs.</param>
+        /// <param name="ttclid">TikTok Click Identifier from ad click URLs.</param>
+        /// <param name="msclkid">Microsoft Click Identifier from ad click URLs.</param>
+        public static void SetAttributionData(
+            string deeplinkId = null,
+            string gclid = null,
+            string fbclid = null,
+            string ttclid = null,
+            string msclkid = null)
         {
             if (!CheckInitialized("SetAttributionData")) return;
 
-            // Update the Rust core's DeviceContext with the attribution fields.
-            // When both params are null, explicitly clear the fields in DeviceContext
-            // by sending empty strings so the Rust core removes them.
+            _deeplinkId = deeplinkId;
+
+            // Build DeviceContext update
             var ctx = new Dictionary<string, object>();
             if (deeplinkId != null)
                 ctx["deeplink_id"] = deeplinkId;
             if (gclid != null)
                 ctx["gclid"] = gclid;
+            _gclid = gclid;
+            _fbclid = fbclid;
+            _fbc = fbclid != null
+                ? $"fb.1.{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}.{fbclid}"
+                : null;
+            _ttclid = ttclid;
+            _msclkid = msclkid;
+            if (fbclid != null)
+            {
+                ctx["fbclid"] = fbclid;
+                ctx["fbc"] = _fbc;
+            }
+            if (ttclid != null)
+                ctx["ttclid"] = ttclid;
+            if (msclkid != null)
+                ctx["msclkid"] = msclkid;
 
             if (ctx.Count > 0)
             {
@@ -687,30 +816,37 @@ namespace Layers.Unity
             }
             else
             {
-                // Both params null — clear attribution from DeviceContext
+                // All params null — clear attribution from DeviceContext
                 ctx["deeplink_id"] = "";
                 ctx["gclid"] = "";
+                ctx["fbclid"] = "";
+                ctx["fbc"] = "";
+                ctx["ttclid"] = "";
+                ctx["msclkid"] = "";
                 _platform.SetDeviceContext(JsonHelper.Serialize(ctx));
             }
 
-            // Persist to PlayerPrefs for restore across app restarts
-            const string deeplinkIdKey = "layers_attribution_deeplink_id";
-            const string gclidKey = "layers_attribution_gclid";
-
-            if (deeplinkId != null)
-                PlayerPrefs.SetString(deeplinkIdKey, deeplinkId);
-            else
-                PlayerPrefs.DeleteKey(deeplinkIdKey);
-
-            if (gclid != null)
-                PlayerPrefs.SetString(gclidKey, gclid);
-            else
-                PlayerPrefs.DeleteKey(gclidKey);
+            // Persist to PlayerPrefs for restore across app restarts.
+            PersistOrClear(PrefDeeplinkId, deeplinkId);
+            PersistOrClear(PrefGclid, gclid);
+            PersistOrClear(PrefFbclid, fbclid);
+            PersistOrClear(PrefFbc, _fbc);
+            PersistOrClear(PrefTtclid, ttclid);
+            PersistOrClear(PrefMsclkid, msclkid);
 
             PlayerPrefs.Save();
 
             LayersLogger.Log(
-                $"SetAttributionData(deeplinkId={deeplinkId ?? "null"}, gclid={gclid ?? "null"})");
+                $"SetAttributionData(deeplinkId={deeplinkId ?? "null"}, gclid={gclid ?? "null"}, " +
+                $"fbclid={fbclid ?? "null"}, ttclid={ttclid ?? "null"}, msclkid={msclkid ?? "null"})");
+        }
+
+        private static void PersistOrClear(string key, string value)
+        {
+            if (value != null)
+                PlayerPrefs.SetString(key, value);
+            else
+                PlayerPrefs.DeleteKey(key);
         }
 
         /// <summary>
@@ -719,25 +855,75 @@ namespace Layers.Unity
         /// </summary>
         private static void RestoreAttributionData()
         {
-            const string deeplinkIdKey = "layers_attribution_deeplink_id";
-            const string gclidKey = "layers_attribution_gclid";
+            string deeplinkId = RestoreString(PrefDeeplinkId);
+            string gclid = RestoreString(PrefGclid);
+            string fbclid = RestoreString(PrefFbclid);
+            string fbc = RestoreString(PrefFbc);
+            string ttclid = RestoreString(PrefTtclid);
+            string msclkid = RestoreString(PrefMsclkid);
 
-            string deeplinkId = PlayerPrefs.GetString(deeplinkIdKey, null);
-            string gclid = PlayerPrefs.GetString(gclidKey, null);
+            // Restore in-memory cache
+            _deeplinkId = deeplinkId;
+            _gclid = gclid;
+            _fbclid = fbclid;
+            _fbc = fbc;
+            _ttclid = ttclid;
+            _msclkid = msclkid;
 
-            if (string.IsNullOrEmpty(deeplinkId)) deeplinkId = null;
-            if (string.IsNullOrEmpty(gclid)) gclid = null;
+            var ctx = new Dictionary<string, object>();
+            if (deeplinkId != null) ctx["deeplink_id"] = deeplinkId;
+            if (gclid != null) ctx["gclid"] = gclid;
+            if (fbclid != null) ctx["fbclid"] = fbclid;
+            if (fbc != null) ctx["fbc"] = fbc;
+            if (ttclid != null) ctx["ttclid"] = ttclid;
+            if (msclkid != null) ctx["msclkid"] = msclkid;
 
-            if (deeplinkId != null || gclid != null)
+            if (ctx.Count > 0)
             {
-                var ctx = new Dictionary<string, object>();
-                if (deeplinkId != null) ctx["deeplink_id"] = deeplinkId;
-                if (gclid != null) ctx["gclid"] = gclid;
                 _platform.SetDeviceContext(JsonHelper.Serialize(ctx));
 
                 LayersLogger.Log(
-                    $"Restored attribution data: deeplinkId={deeplinkId ?? "null"}, gclid={gclid ?? "null"}");
+                    $"Restored attribution data: deeplinkId={deeplinkId ?? "null"}, gclid={gclid ?? "null"}, " +
+                    $"fbclid={fbclid ?? "null"}, ttclid={ttclid ?? "null"}, msclkid={msclkid ?? "null"}");
             }
+        }
+
+        private static string RestoreString(string key)
+        {
+            string val = PlayerPrefs.GetString(key, null);
+            return string.IsNullOrEmpty(val) ? null : val;
+        }
+
+        /// <summary>
+        /// Merge stored click IDs into the given event properties dictionary.
+        /// Returns a new dictionary with click IDs injected (user-supplied
+        /// properties take precedence if they share the same key).
+        /// </summary>
+        private static Dictionary<string, object> MergeAttributionProperties(
+            Dictionary<string, object> properties)
+        {
+            if (_gclid == null && _fbclid == null && _fbc == null &&
+                _ttclid == null && _msclkid == null)
+            {
+                return properties;
+            }
+
+            var merged = properties != null
+                ? new Dictionary<string, object>(properties)
+                : new Dictionary<string, object>();
+
+            if (_gclid != null && !merged.ContainsKey("gclid"))
+                merged["gclid"] = _gclid;
+            if (_fbclid != null && !merged.ContainsKey("fbclid"))
+                merged["fbclid"] = _fbclid;
+            if (_fbc != null && !merged.ContainsKey("$fbc"))
+                merged["$fbc"] = _fbc;
+            if (_ttclid != null && !merged.ContainsKey("ttclid"))
+                merged["ttclid"] = _ttclid;
+            if (_msclkid != null && !merged.ContainsKey("msclkid"))
+                merged["msclkid"] = _msclkid;
+
+            return merged;
         }
 
         // ── Debug Overlay ────────────────────────────────────────────────
