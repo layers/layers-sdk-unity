@@ -5,7 +5,7 @@ namespace Layers.Unity.Internal
     /// <summary>
     /// Hidden MonoBehaviour singleton that hosts coroutines for periodic flush and
     /// remote config polling, and forwards Unity lifecycle callbacks to the main
-    /// <see cref="Layers"/> class.
+    /// <see cref="LayersSDK"/> class.
     ///
     /// Created lazily on first access. The GameObject is marked with
     /// <see cref="HideFlags.HideAndDontSave"/> so it does not appear in the
@@ -43,7 +43,7 @@ namespace Layers.Unity.Internal
                 && current != NetworkReachability.NotReachable)
             {
                 // Went from offline to online — flush queued events
-                Layers.OnReconnected();
+                LayersSDK.OnReconnected();
             }
             _lastReachability = current;
         }
@@ -55,9 +55,9 @@ namespace Layers.Unity.Internal
         private void OnApplicationPause(bool paused)
         {
             if (paused)
-                Layers.OnBackgrounded();
+                LayersSDK.OnBackgrounded();
             else
-                Layers.OnForegrounded();
+                LayersSDK.OnForegrounded();
         }
 
         /// <summary>
@@ -66,7 +66,7 @@ namespace Layers.Unity.Internal
         /// </summary>
         private void OnApplicationQuit()
         {
-            Layers.OnQuitting();
+            LayersSDK.OnQuitting();
         }
 
         private void OnDestroy()
