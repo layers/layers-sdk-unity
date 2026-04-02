@@ -180,7 +180,7 @@ namespace Layers.Unity
 
         private void DrawDataRows()
         {
-            DrawRow("SDK Version", $"unity/0.1.0");
+            DrawRow("SDK Version", $"unity/{LayersSDK.SdkVersion}");
             DrawRow("Status", _sdkInitialized ? "Initialized" : "Not initialized");
             DrawRow("Environment", _environment);
             DrawRow("App ID", _appId);

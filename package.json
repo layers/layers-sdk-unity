@@ -1,6 +1,6 @@
 {
   "name": "com.layers.analytics",
-  "version": "2.1.8",
+  "version": "2.1.9",
   "displayName": "Layers Analytics",
   "description": "Layers Analytics SDK for Unity — Rust-powered analytics core with thin C# wrapper. iOS, Android, and WebGL.",
   "unity": "2021.3",

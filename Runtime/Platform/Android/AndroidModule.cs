@@ -53,6 +53,13 @@ namespace Layers.Unity
                 {
                     appContext = activity.Call<AndroidJavaObject>("getApplicationContext");
                 }
+
+                if (appContext == null)
+                {
+                    Debug.LogWarning($"[{Tag}] GAID fetch skipped: applicationContext is null");
+                    callback?.Invoke(null, false);
+                    return;
+                }
             }
             catch (Exception e)
             {
@@ -71,6 +78,13 @@ namespace Layers.Unity
                     using (var adInfo = adIdClient.CallStatic<AndroidJavaObject>(
                         "getAdvertisingIdInfo", appContext))
                     {
+                        if (adInfo == null)
+                        {
+                            Debug.LogWarning("[LayersSDK] GAID fetch failed: Google Play Services unavailable or returned null");
+                            callback?.Invoke(null, false);
+                            return;
+                        }
+
                         bool limitTracking = adInfo.Call<bool>("isLimitAdTrackingEnabled");
                         string id = adInfo.Call<string>("getId");
 
