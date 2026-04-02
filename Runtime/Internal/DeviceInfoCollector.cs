@@ -14,7 +14,7 @@ namespace Layers.Unity.Internal
         {
             return new Dictionary<string, object>
             {
-                ["platform"] = "unity",
+                ["platform"] = RuntimePlatform,
                 ["os_version"] = SystemInfo.operatingSystem,
                 ["device_model"] = SystemInfo.deviceModel,
                 ["app_version"] = Application.version,
@@ -24,6 +24,24 @@ namespace Layers.Unity.Internal
                 ["install_id"] = InstallIdProvider.GetOrCreate(),
                 ["timezone"] = System.TimeZoneInfo.Local.Id
             };
+        }
+
+        internal static string RuntimePlatform
+        {
+            get
+            {
+#if UNITY_IOS
+                return "ios";
+#elif UNITY_ANDROID
+                return "android";
+#elif UNITY_WEBGL
+                return "web";
+#elif UNITY_STANDALONE_OSX
+                return "macos";
+#else
+                return "unity";
+#endif
+            }
         }
     }
 }

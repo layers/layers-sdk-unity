@@ -42,17 +42,34 @@ namespace Layers.Unity
         public static void GetAdvertisingId(Action<string, bool> callback)
         {
 #if UNITY_ANDROID && !UNITY_EDITOR
+            // Capture the application context on the main thread where
+            // UnityPlayer.currentActivity is guaranteed to be available.
+            // Only the blocking getAdvertisingIdInfo() call runs on a background thread.
+            AndroidJavaObject appContext;
+            try
+            {
+                using (var unityPlayer = new AndroidJavaClass("com.unity3d.player.UnityPlayer"))
+                using (var activity = unityPlayer.GetStatic<AndroidJavaObject>("currentActivity"))
+                {
+                    appContext = activity.Call<AndroidJavaObject>("getApplicationContext");
+                }
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"[{Tag}] GAID fetch failed (no activity): {e.Message}");
+                callback?.Invoke(null, false);
+                return;
+            }
+
             System.Threading.Tasks.Task.Run(() =>
             {
                 try
                 {
-                    using (var unityPlayer = new AndroidJavaClass("com.unity3d.player.UnityPlayer"))
-                    using (var activity = unityPlayer.GetStatic<AndroidJavaObject>("currentActivity"))
-                    using (var context = activity.Call<AndroidJavaObject>("getApplicationContext"))
+                    using (appContext)
                     using (var adIdClient = new AndroidJavaClass(
                         "com.google.android.gms.ads.identifier.AdvertisingIdClient"))
                     using (var adInfo = adIdClient.CallStatic<AndroidJavaObject>(
-                        "getAdvertisingIdInfo", context))
+                        "getAdvertisingIdInfo", appContext))
                     {
                         bool limitTracking = adInfo.Call<bool>("isLimitAdTrackingEnabled");
                         string id = adInfo.Call<string>("getId");
@@ -104,41 +121,55 @@ namespace Layers.Unity
         public static void GetInstallReferrer(Action<InstallReferrerResult> callback)
         {
 #if UNITY_ANDROID && !UNITY_EDITOR
+            AndroidJavaObject context = null;
+            AndroidJavaObject client = null;
             try
             {
+                // Get the application context. Do NOT wrap context in `using` —
+                // startConnection is async and the proxy callback needs context alive.
+                // The proxy owns context and disposes it after the callback completes.
                 using (var unityPlayer = new AndroidJavaClass("com.unity3d.player.UnityPlayer"))
                 using (var activity = unityPlayer.GetStatic<AndroidJavaObject>("currentActivity"))
-                using (var context = activity.Call<AndroidJavaObject>("getApplicationContext"))
                 {
-                    // Check if referrer has already been collected
-                    using (var prefs = context.Call<AndroidJavaObject>(
-                        "getSharedPreferences", "layers_sdk", 0 /* MODE_PRIVATE */))
-                    {
-                        bool alreadyCollected = prefs.Call<bool>(
-                            "getBoolean", "layers_referrer_collected", false);
-                        if (alreadyCollected)
-                        {
-                            callback?.Invoke(null);
-                            return;
-                        }
-                    }
+                    context = activity.Call<AndroidJavaObject>("getApplicationContext");
+                }
 
-                    // Build the InstallReferrerClient
-                    using (var builderClass = new AndroidJavaClass(
-                        "com.android.installreferrer.api.InstallReferrerClient"))
-                    using (var builder = builderClass.CallStatic<AndroidJavaObject>(
-                        "newBuilder", context))
-                    using (var client = builder.Call<AndroidJavaObject>("build"))
+                // Check if referrer has already been collected
+                using (var prefs = context.Call<AndroidJavaObject>(
+                    "getSharedPreferences", "layers_sdk", 0 /* MODE_PRIVATE */))
+                {
+                    bool alreadyCollected = prefs.Call<bool>(
+                        "getBoolean", "layers_referrer_collected", false);
+                    if (alreadyCollected)
                     {
-                        // Create the listener proxy
-                        var listener = new InstallReferrerStateListenerProxy(
-                            client, context, callback);
-                        client.Call("startConnection", listener);
+                        context.Dispose();
+                        callback?.Invoke(null);
+                        return;
                     }
                 }
+
+                // Build the InstallReferrerClient.
+                // Do NOT wrap client in `using` — startConnection is async
+                // and the callback fires later. The proxy owns both client and
+                // context, disposing them in EndConnection() after completion.
+                using (var builderClass = new AndroidJavaClass(
+                    "com.android.installreferrer.api.InstallReferrerClient"))
+                using (var builder = builderClass.CallStatic<AndroidJavaObject>(
+                    "newBuilder", context))
+                {
+                    client = builder.Call<AndroidJavaObject>("build");
+                }
+
+                var listener = new InstallReferrerStateListenerProxy(
+                    client, context, callback);
+                client.Call("startConnection", listener);
             }
             catch (Exception e)
             {
+                // Dispose JNI objects if created before the exception — since they
+                // are not in `using` blocks, we must clean up manually on error.
+                try { client?.Dispose(); } catch (Exception) { }
+                try { context?.Dispose(); } catch (Exception) { }
                 Debug.LogWarning($"[{Tag}] Install referrer fetch failed: {e.Message}");
                 callback?.Invoke(null);
             }
@@ -265,6 +296,10 @@ namespace Layers.Unity
                 {
                     // Ignore — best effort cleanup
                 }
+
+                // Dispose Java objects that the proxy owns (not managed by `using` blocks)
+                try { _client?.Dispose(); } catch (Exception) { }
+                try { _context?.Dispose(); } catch (Exception) { }
             }
         }
 
@@ -287,84 +322,6 @@ namespace Layers.Unity
             }
         }
 #endif
-
-        // ── Device Info ────────────────────────────────────────────────
-
-        /// <summary>
-        /// Collect Android device information from android.os.Build and related APIs.
-        /// Returns a dictionary of device properties suitable for setting as device context.
-        /// </summary>
-        public static Dictionary<string, string> GetDeviceInfo()
-        {
-            var info = new Dictionary<string, string>();
-
-#if UNITY_ANDROID && !UNITY_EDITOR
-            try
-            {
-                using (var buildClass = new AndroidJavaClass("android.os.Build"))
-                using (var versionClass = new AndroidJavaClass("android.os.Build$VERSION"))
-                {
-                    info["platform"] = "android";
-                    info["os_version"] = versionClass.GetStatic<string>("RELEASE") ?? "";
-                    info["device_manufacturer"] = buildClass.GetStatic<string>("MANUFACTURER") ?? "";
-                    info["device_model"] = buildClass.GetStatic<string>("MODEL") ?? "";
-                    info["device_brand"] = buildClass.GetStatic<string>("BRAND") ?? "";
-                    info["device_product"] = buildClass.GetStatic<string>("PRODUCT") ?? "";
-                    info["sdk_int"] = versionClass.GetStatic<int>("SDK_INT").ToString();
-                }
-
-                // App version info
-                using (var unityPlayer = new AndroidJavaClass("com.unity3d.player.UnityPlayer"))
-                using (var activity = unityPlayer.GetStatic<AndroidJavaObject>("currentActivity"))
-                using (var context = activity.Call<AndroidJavaObject>("getApplicationContext"))
-                {
-                    string packageName = context.Call<string>("getPackageName");
-                    info["package_name"] = packageName ?? "";
-
-                    using (var pm = context.Call<AndroidJavaObject>("getPackageManager"))
-                    using (var packageInfo = pm.Call<AndroidJavaObject>(
-                        "getPackageInfo", packageName, 0))
-                    {
-                        string versionName = packageInfo.Get<string>("versionName");
-                        info["app_version"] = versionName ?? "0.0.0";
-
-                        // versionCode (deprecated in API 28 but universally available)
-                        int versionCode = packageInfo.Get<int>("versionCode");
-                        info["build_number"] = versionCode.ToString();
-                    }
-
-                    // Screen size
-                    using (var resources = context.Call<AndroidJavaObject>("getResources"))
-                    using (var dm = resources.Call<AndroidJavaObject>("getDisplayMetrics"))
-                    {
-                        int widthPixels = dm.Get<int>("widthPixels");
-                        int heightPixels = dm.Get<int>("heightPixels");
-                        info["screen_size"] = $"{widthPixels}x{heightPixels}";
-                    }
-                }
-
-                // Locale
-                using (var localeClass = new AndroidJavaClass("java.util.Locale"))
-                using (var defaultLocale = localeClass.CallStatic<AndroidJavaObject>("getDefault"))
-                {
-                    info["locale"] = defaultLocale.Call<string>("toString") ?? "";
-                }
-
-                // Timezone
-                using (var tzClass = new AndroidJavaClass("java.util.TimeZone"))
-                using (var defaultTz = tzClass.CallStatic<AndroidJavaObject>("getDefault"))
-                {
-                    info["timezone"] = defaultTz.Call<string>("getID") ?? "";
-                }
-            }
-            catch (Exception e)
-            {
-                Debug.LogWarning($"[{Tag}] Device info collection failed: {e.Message}");
-            }
-#endif
-
-            return info;
-        }
 
         // ── Install ID ─────────────────────────────────────────────────
 

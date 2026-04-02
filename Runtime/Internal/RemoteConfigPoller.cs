@@ -88,7 +88,7 @@ namespace Layers.Unity.Internal
         private IEnumerator FetchConfig()
         {
             // Build URL with query parameters matching the Flutter pattern
-            string url = $"{_baseUrl}/config?app_id={UnityWebRequest.EscapeURL(_appId)}&platform=unity";
+            string url = $"{_baseUrl}/config?app_id={UnityWebRequest.EscapeURL(_appId)}&platform={DeviceInfoCollector.RuntimePlatform}";
 
             using (var request = UnityWebRequest.Get(url))
             {

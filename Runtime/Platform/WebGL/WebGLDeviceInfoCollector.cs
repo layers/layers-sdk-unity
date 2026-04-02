@@ -28,7 +28,7 @@ namespace Layers.Unity.Internal
 
             return new Dictionary<string, object>
             {
-                ["platform"] = "unity",
+                ["platform"] = "web",
                 ["os_version"] = osVersion,
                 ["device_model"] = SystemInfo.deviceModel,
                 ["app_version"] = Application.version,
