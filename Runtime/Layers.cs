@@ -37,7 +37,7 @@ namespace Layers.Unity
     {
         // ── Constants ────────────────────────────────────────────────────
 
-        internal const string SdkVersion = "3.1.0";
+        internal const string SdkVersion = "3.1.1";
 
         // ── State ────────────────────────────────────────────────────────
 
