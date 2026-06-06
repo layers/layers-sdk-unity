@@ -13,7 +13,7 @@ namespace Layers.Unity
     /// and auto-tracks a <c>deep_link_opened</c> event via the Rust core.
     ///
     /// This module is a static class with internal init/teardown methods called by
-    /// the main <c>Layers</c> class. Consumer code registers listeners via
+    /// the main <c>LayersSDK</c> class. Consumer code registers listeners via
     /// <see cref="OnDeepLinkReceived"/>.
     /// </summary>
     public static class DeepLinksModule
@@ -45,7 +45,7 @@ namespace Layers.Unity
             }
         }
 
-        // ── Internal Init / Teardown (called by Layers class) ─────────
+        // ── Internal Init / Teardown (called by LayersSDK class) ─────────
 
         private static bool s_initialized;
         private static bool s_enabled;
@@ -53,7 +53,7 @@ namespace Layers.Unity
         private static bool s_enableDebug;
 
         /// <summary>
-        /// Initialize the deep links module. Called by the main Layers class during init.
+        /// Initialize the deep links module. Called by the main LayersSDK class during init.
         /// </summary>
         /// <param name="enabled">
         /// Whether to auto-track <c>deep_link_opened</c> events.
@@ -86,7 +86,7 @@ namespace Layers.Unity
         }
 
         /// <summary>
-        /// Tear down the deep links module. Called by the main Layers class during shutdown.
+        /// Tear down the deep links module. Called by the main LayersSDK class during shutdown.
         /// </summary>
         internal static void Teardown()
         {
@@ -212,16 +212,19 @@ namespace Layers.Unity
             }
 
             string propsJson = JsonHelper.Serialize(props);
+            // Emit the canonical $-prefixed system event introduced in Tier 1
+            // (see schema/PROTOCOL.md). The legacy non-prefixed `deep_link_opened`
+            // remains in StandardEvents.DeepLink for backward-compat lookups.
             string error = NativeStringHelper.ProcessResult(
-                NativeBindings.layers_track("deep_link_opened", propsJson));
+                NativeBindings.layers_track(StandardEvents.LayersDeepLinkOpened, propsJson));
 
             if (error != null && s_enableDebug)
             {
-                Debug.LogWarning($"[Layers] deep_link_opened track failed: {error}");
+                Debug.LogWarning($"[Layers] $deep_link_opened track failed: {error}");
             }
             else if (s_enableDebug)
             {
-                Debug.Log($"[Layers] auto-tracked deep_link_opened: {data.RawUrl}");
+                Debug.Log($"[Layers] auto-tracked $deep_link_opened: {data.RawUrl}");
             }
         }
 

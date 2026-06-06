@@ -23,6 +23,24 @@ using UnityEngine;
 namespace Layers.Unity
 {
     /// <summary>
+    /// Price + currency for a RevenueCat product. Pass to
+    /// <see cref="RevenueCatIntegration.OnCustomerInfoUpdated"/> so that
+    /// <c>subscription_start</c> events carry the recurring price required
+    /// by Meta CAPI value-per-conversion modeling.
+    /// </summary>
+    public struct RevenueCatProductPrice
+    {
+        public double Price;
+        public string Currency;
+
+        public RevenueCatProductPrice(double price, string currency)
+        {
+            Price = price;
+            Currency = currency;
+        }
+    }
+
+    /// <summary>
     /// RevenueCat integration for the Layers Unity SDK.
     ///
     /// Provides static methods to forward purchase/subscription events to Layers
@@ -129,6 +147,37 @@ namespace Layers.Unity
             IEnumerable<string> activeProductIds,
             string originalAppUserId = null)
         {
+            OnCustomerInfoUpdated(activeProductIds, null, originalAppUserId);
+        }
+
+        /// <summary>
+        /// Same as <see cref="OnCustomerInfoUpdated(IEnumerable{string}, string)"/>
+        /// but forwards recurring price + currency on the <c>subscription_start</c>
+        /// event for each newly active product. Pass the price map you derive
+        /// from RevenueCat's offerings (<c>Package.product.price</c> and
+        /// <c>Package.product.priceString</c> / <c>currencyCode</c>).
+        ///
+        /// Send the recurring price even on free trials — Meta CAPI uses it
+        /// for value-per-conversion modeling and treats <c>value=0</c> as a
+        /// signal not to bid for those users.
+        /// </summary>
+        /// <param name="activeProductIds">
+        /// List of currently active subscription product IDs. Pass an empty
+        /// list or null if the user has no active subscriptions.
+        /// </param>
+        /// <param name="productPrices">
+        /// Map of product ID → recurring price + currency. Required for any
+        /// products you want the <c>subscription_start</c> event to include
+        /// price data for. May be null if no price data is available.
+        /// </param>
+        /// <param name="originalAppUserId">
+        /// The RevenueCat original app user ID, or null.
+        /// </param>
+        public static void OnCustomerInfoUpdated(
+            IEnumerable<string> activeProductIds,
+            IDictionary<string, RevenueCatProductPrice> productPrices,
+            string originalAppUserId = null)
+        {
             try
             {
                 var current = new HashSet<string>();
@@ -148,11 +197,21 @@ namespace Layers.Unity
                     {
                         if (!_activeSubscriptions.Contains(productId))
                         {
-                            LayersSDK.Track("subscription_start", new Dictionary<string, object>
+                            var props = new Dictionary<string, object>
                             {
                                 ["product_id"] = productId,
                                 ["source"] = "revenuecat"
-                            });
+                            };
+
+                            if (productPrices != null
+                                && productPrices.TryGetValue(productId, out var price)
+                                && !string.IsNullOrEmpty(price.Currency))
+                            {
+                                props["price"] = price.Price;
+                                props["currency"] = price.Currency;
+                            }
+
+                            LayersSDK.Track("subscription_start", props);
                         }
                     }
                 }

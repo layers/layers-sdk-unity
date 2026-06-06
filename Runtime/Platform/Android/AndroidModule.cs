@@ -273,7 +273,18 @@ namespace Layers.Unity
                             UtmCampaign = parsed.GetValueOrDefault("utm_campaign"),
                             UtmContent = parsed.GetValueOrDefault("utm_content"),
                             UtmTerm = parsed.GetValueOrDefault("utm_term"),
-                            Gclid = parsed.GetValueOrDefault("gclid")
+                            Gclid = parsed.GetValueOrDefault("gclid"),
+                            Fbclid = parsed.GetValueOrDefault("fbclid"),
+                            Ttclid = parsed.GetValueOrDefault("ttclid"),
+                            Twclid = parsed.GetValueOrDefault("twclid"),
+                            Msclkid = parsed.GetValueOrDefault("msclkid"),
+                            Gbraid = parsed.GetValueOrDefault("gbraid"),
+                            Wbraid = parsed.GetValueOrDefault("wbraid"),
+                            Rclid = parsed.GetValueOrDefault("rclid"),
+                            LiFatId = parsed.GetValueOrDefault("li_fat_id"),
+                            Sclid = parsed.GetValueOrDefault("sclid"),
+                            Irclickid = parsed.GetValueOrDefault("irclickid"),
+                            ClickId = parsed.GetValueOrDefault("click_id")
                         };
 
                         // Mark as collected so we don't fetch again
@@ -336,6 +347,144 @@ namespace Layers.Unity
             }
         }
 #endif
+
+        // ── Device Info ────────────────────────────────────────────────
+
+        /// <summary>
+        /// Get the Android release version (e.g. "13", "14"). Read from
+        /// android.os.Build.VERSION.RELEASE — the bare dotted-decimal that
+        /// matches the format other SDKs send. Returns null if the JNI call
+        /// fails.
+        ///
+        /// Do NOT compose this with SDK_INT or FINGERPRINT — that is what
+        /// Unity's SystemInfo.operatingSystem does, and the resulting verbose
+        /// string ("Android OS 13 / API-33 (TP1A.220624.014/...)") fails
+        /// downstream validation in Meta CAPI and TikTok CAPI.
+        /// </summary>
+        public static string GetOsVersion()
+        {
+#if UNITY_ANDROID && !UNITY_EDITOR
+            try
+            {
+                using (var versionClass = new AndroidJavaClass("android.os.Build$VERSION"))
+                {
+                    return versionClass.GetStatic<string>("RELEASE");
+                }
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"[{Tag}] OS version read failed: {e.Message}");
+                return null;
+            }
+#else
+            return null;
+#endif
+        }
+
+        /// <summary>
+        /// Get the device model string formatted as "Manufacturer Model"
+        /// (e.g. "samsung SM-G991B"). Returns null if the JNI call fails.
+        /// </summary>
+        public static string GetDeviceModel()
+        {
+#if UNITY_ANDROID && !UNITY_EDITOR
+            try
+            {
+                using (var buildClass = new AndroidJavaClass("android.os.Build"))
+                {
+                    string manufacturer = buildClass.GetStatic<string>("MANUFACTURER");
+                    string model = buildClass.GetStatic<string>("MODEL");
+
+                    if (string.IsNullOrEmpty(manufacturer) && string.IsNullOrEmpty(model))
+                        return null;
+                    if (string.IsNullOrEmpty(manufacturer))
+                        return model;
+                    if (string.IsNullOrEmpty(model))
+                        return manufacturer;
+                    // If the model already starts with the manufacturer name
+                    // (e.g. "Google Pixel 7"), avoid the duplicate prefix.
+                    if (model.StartsWith(manufacturer, StringComparison.OrdinalIgnoreCase))
+                        return model;
+                    return $"{manufacturer} {model}";
+                }
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"[{Tag}] Device model read failed: {e.Message}");
+                return null;
+            }
+#else
+            return null;
+#endif
+        }
+
+        /// <summary>
+        /// Get the app's user-facing version string from PackageInfo.versionName
+        /// (e.g. "1.0.5"). Returns null if the PackageManager call fails.
+        /// </summary>
+        public static string GetAppVersion()
+        {
+#if UNITY_ANDROID && !UNITY_EDITOR
+            try
+            {
+                using (var unityPlayer = new AndroidJavaClass("com.unity3d.player.UnityPlayer"))
+                using (var activity = unityPlayer.GetStatic<AndroidJavaObject>("currentActivity"))
+                using (var context = activity.Call<AndroidJavaObject>("getApplicationContext"))
+                using (var pm = context.Call<AndroidJavaObject>("getPackageManager"))
+                {
+                    string packageName = context.Call<string>("getPackageName");
+                    using (var info = pm.Call<AndroidJavaObject>("getPackageInfo", packageName, 0))
+                    {
+                        return info.Get<string>("versionName");
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"[{Tag}] App version read failed: {e.Message}");
+                return null;
+            }
+#else
+            return null;
+#endif
+        }
+
+        /// <summary>
+        /// Get the app's build code from PackageInfo.versionCode (e.g. "1050").
+        /// Distinct from versionName — sending the same value for both fields
+        /// loses the build-code dimension downstream. Returns null if the
+        /// PackageManager call fails.
+        /// </summary>
+        public static string GetBuildNumber()
+        {
+#if UNITY_ANDROID && !UNITY_EDITOR
+            try
+            {
+                using (var unityPlayer = new AndroidJavaClass("com.unity3d.player.UnityPlayer"))
+                using (var activity = unityPlayer.GetStatic<AndroidJavaObject>("currentActivity"))
+                using (var context = activity.Call<AndroidJavaObject>("getApplicationContext"))
+                using (var pm = context.Call<AndroidJavaObject>("getPackageManager"))
+                {
+                    string packageName = context.Call<string>("getPackageName");
+                    using (var info = pm.Call<AndroidJavaObject>("getPackageInfo", packageName, 0))
+                    {
+                        // versionCode is an int; convert via String.valueOf to
+                        // get a stable decimal representation regardless of
+                        // locale or culture.
+                        int code = info.Get<int>("versionCode");
+                        return code.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"[{Tag}] Build number read failed: {e.Message}");
+                return null;
+            }
+#else
+            return null;
+#endif
+        }
 
         // ── Install ID ─────────────────────────────────────────────────
 
@@ -573,11 +722,25 @@ namespace Layers.Unity
 
         /// <summary>
         /// All attribution parameters recognized by ParseReferrer().
-        /// Matches the Kotlin SDK's InstallReferrerTracker.ATTRIBUTION_PARAMS.
+        /// Keep in sync with Kotlin InstallReferrerTracker.ATTRIBUTION_PARAMS and
+        /// layers sdk-ingest routes/click.ts::buildAndroidReferrerUrl.
         /// </summary>
         private static readonly HashSet<string> AttributionParams = new HashSet<string>
         {
-            "gclid", "utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term"
+            // UTM
+            "utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term",
+            // Ad platform click IDs
+            "gclid", "gbraid", "wbraid",   // Google
+            "fbclid",                        // Meta
+            "ttclid",                        // TikTok
+            "twclid",                        // X
+            "msclkid",                       // Microsoft
+            "li_fat_id",                     // LinkedIn
+            "sclid",                         // Snapchat
+            "rclid",                         // Reddit
+            "irclickid",                     // Impact
+            // Layers click_id (primary key of sdk_clicks)
+            "click_id"
         };
 
         private static bool IsAttributionParam(string key)
@@ -659,6 +822,39 @@ namespace Layers.Unity
         /// <summary>Google Click Identifier, or null.</summary>
         public string Gclid { get; set; }
 
+        /// <summary>Facebook/Meta Click Identifier, or null.</summary>
+        public string Fbclid { get; set; }
+
+        /// <summary>TikTok Click Identifier, or null.</summary>
+        public string Ttclid { get; set; }
+
+        /// <summary>X (Twitter) Click Identifier, or null.</summary>
+        public string Twclid { get; set; }
+
+        /// <summary>Microsoft Click Identifier, or null.</summary>
+        public string Msclkid { get; set; }
+
+        /// <summary>Google iOS web-to-app identifier (gbraid), or null.</summary>
+        public string Gbraid { get; set; }
+
+        /// <summary>Google web-to-app identifier (wbraid), or null.</summary>
+        public string Wbraid { get; set; }
+
+        /// <summary>Reddit Click Identifier, or null.</summary>
+        public string Rclid { get; set; }
+
+        /// <summary>LinkedIn Click Identifier, or null.</summary>
+        public string LiFatId { get; set; }
+
+        /// <summary>Snapchat Click Identifier, or null.</summary>
+        public string Sclid { get; set; }
+
+        /// <summary>Impact Radius Click Identifier, or null.</summary>
+        public string Irclickid { get; set; }
+
+        /// <summary>Layers click_id (primary key of sdk_clicks), or null.</summary>
+        public string ClickId { get; set; }
+
         /// <summary>
         /// Convert to a properties dictionary suitable for tracking as an install_referrer event.
         /// Matches the Kotlin SDK's InstallReferrerTracker event format.
@@ -682,6 +878,17 @@ namespace Layers.Unity
             if (!string.IsNullOrEmpty(UtmContent)) props["utm_content"] = UtmContent;
             if (!string.IsNullOrEmpty(UtmTerm)) props["utm_term"] = UtmTerm;
             if (!string.IsNullOrEmpty(Gclid)) props["gclid"] = Gclid;
+            if (!string.IsNullOrEmpty(Fbclid)) props["fbclid"] = Fbclid;
+            if (!string.IsNullOrEmpty(Ttclid)) props["ttclid"] = Ttclid;
+            if (!string.IsNullOrEmpty(Twclid)) props["twclid"] = Twclid;
+            if (!string.IsNullOrEmpty(Msclkid)) props["msclkid"] = Msclkid;
+            if (!string.IsNullOrEmpty(Gbraid)) props["gbraid"] = Gbraid;
+            if (!string.IsNullOrEmpty(Wbraid)) props["wbraid"] = Wbraid;
+            if (!string.IsNullOrEmpty(Rclid)) props["rclid"] = Rclid;
+            if (!string.IsNullOrEmpty(LiFatId)) props["li_fat_id"] = LiFatId;
+            if (!string.IsNullOrEmpty(Sclid)) props["sclid"] = Sclid;
+            if (!string.IsNullOrEmpty(Irclickid)) props["irclickid"] = Irclickid;
+            if (!string.IsNullOrEmpty(ClickId)) props["click_id"] = ClickId;
 
             return props;
         }

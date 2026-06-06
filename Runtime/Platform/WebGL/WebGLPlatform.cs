@@ -121,6 +121,16 @@ namespace Layers.Unity.Internal
             return WebGLStringHelper.ReadAndFree(WebGLBindings.LayersWebGL_GetSessionId());
         }
 
+        public string GetDebugToken()
+        {
+            // The WebGL bridge can route this to either the Rust core's WASM
+            // export (debugToken) or the JS-side debug-token state. Today we
+            // forward to the Rust WASM side for parity with native; the JS
+            // wrapper layer in `packages/wasm` mints its own token in parallel
+            // for the WASM SDKs that don't go through Unity.
+            return WebGLStringHelper.ReadAndFree(WebGLBindings.LayersWebGL_GetDebugToken());
+        }
+
         public string GetRemoteConfigJson()
         {
             return WebGLStringHelper.ReadAndFree(
@@ -251,6 +261,194 @@ namespace Layers.Unity.Internal
         public string GetPlatformOS()
         {
             return WebGLStringHelper.ReadAndFree(WebGLBindings.LayersWebGL_GetPlatformOS());
+        }
+
+        // ── Tier 1: Super-properties ───────────────────────────────────
+
+        public string SetSuperProperties(string propertiesJson)
+        {
+            WebGLBindings.LayersWebGL_SetSuperProperties(propertiesJson);
+            return null;
+        }
+
+        public string SetSuperPropertiesOnce(string propertiesJson)
+        {
+            WebGLBindings.LayersWebGL_SetSuperPropertiesOnce(propertiesJson);
+            return null;
+        }
+
+        public string UnregisterSuperProperty(string key)
+        {
+            WebGLBindings.LayersWebGL_UnregisterSuperProperty(key);
+            return null;
+        }
+
+        public string ClearSuperProperties()
+        {
+            WebGLBindings.LayersWebGL_ClearSuperProperties();
+            return null;
+        }
+
+        public string GetSuperPropertiesJson()
+        {
+            return WebGLStringHelper.ReadAndFree(WebGLBindings.LayersWebGL_GetSuperPropertiesJson())
+                ?? "{}";
+        }
+
+        // ── Tier 1: Timed events ───────────────────────────────────────
+
+        public string TimeEvent(string eventName)
+        {
+            WebGLBindings.LayersWebGL_TimeEvent(eventName);
+            return null;
+        }
+
+        public ulong CancelTimedEvent(string eventName)
+        {
+            double ms = WebGLBindings.LayersWebGL_CancelTimedEvent(eventName);
+            if (double.IsNaN(ms) || ms < 0) return 0;
+            return (ulong)ms;
+        }
+
+        // ── Tier 1: Multi-group ────────────────────────────────────────
+
+        public string SetGroup(string groupType, string groupId)
+        {
+            WebGLBindings.LayersWebGL_SetGroup(groupType, groupId ?? string.Empty);
+            return null;
+        }
+
+        public string AddGroup(string groupType, string groupId)
+        {
+            WebGLBindings.LayersWebGL_AddGroup(groupType, groupId ?? string.Empty);
+            return null;
+        }
+
+        public string RemoveGroup(string groupType)
+        {
+            WebGLBindings.LayersWebGL_RemoveGroup(groupType);
+            return null;
+        }
+
+        public string GetGroupsJson()
+        {
+            return WebGLStringHelper.ReadAndFree(WebGLBindings.LayersWebGL_GetGroupsJson()) ?? "{}";
+        }
+
+        // ── Tier 1: User-property mutators ─────────────────────────────
+
+        public string Increment(string key, double delta)
+        {
+            WebGLBindings.LayersWebGL_Increment(key, delta);
+            return null;
+        }
+
+        public string Append(string key, string valueJson)
+        {
+            WebGLBindings.LayersWebGL_Append(key, valueJson);
+            return null;
+        }
+
+        public string Union(string key, string valuesJson)
+        {
+            WebGLBindings.LayersWebGL_Union(key, valuesJson);
+            return null;
+        }
+
+        public string Unset(string key)
+        {
+            WebGLBindings.LayersWebGL_Unset(key);
+            return null;
+        }
+
+        // ── Tier 1: Identity reset + ID accessors ──────────────────────
+
+        public string Reset()
+        {
+            WebGLBindings.LayersWebGL_Reset();
+            return null;
+        }
+
+        public string GetDeviceId()
+        {
+            return WebGLStringHelper.ReadAndFree(WebGLBindings.LayersWebGL_GetDeviceId());
+        }
+
+        public string GetAnonymousId()
+        {
+            return WebGLStringHelper.ReadAndFree(WebGLBindings.LayersWebGL_GetAnonymousId());
+        }
+
+        public uint GetSessionNumber()
+        {
+            return WebGLBindings.LayersWebGL_GetSessionNumber();
+        }
+
+        public string GetFirstOpenTime()
+        {
+            return WebGLStringHelper.ReadAndFree(WebGLBindings.LayersWebGL_GetFirstOpenTime());
+        }
+
+        // ── Tier 1: before_send filter hook ────────────────────────────
+
+        /// <summary>
+        /// before_send is not implemented for WebGL — the WASM bridge runs all
+        /// events through the JS layer, where the filter would have to be
+        /// installed on the WASM <c>onBeforeSend</c> hook directly. Returns
+        /// null (no error) and logs a debug message; user filtering is best
+        /// done at the call site for WebGL.
+        /// </summary>
+        public string SetBeforeSend(System.Func<string, string> callback)
+        {
+            LayersLogger.Log("before_send filter is not supported on WebGL");
+            return null;
+        }
+
+        public string ClearBeforeSend()
+        {
+            return null;
+        }
+
+        // ── Tier 4: Feature flags ──────────────────────────────────────
+
+        public string GetFeatureFlagJson(string flagKey)
+        {
+            return WebGLStringHelper.ReadAndFree(
+                WebGLBindings.LayersWebGL_GetFeatureFlag(flagKey));
+        }
+
+        public int IsFeatureEnabled(string flagKey)
+        {
+            return WebGLBindings.LayersWebGL_IsFeatureEnabled(flagKey);
+        }
+
+        public string GetFeatureFlagPayloadJson(string flagKey)
+        {
+            return WebGLStringHelper.ReadAndFree(
+                WebGLBindings.LayersWebGL_GetFeatureFlagPayload(flagKey));
+        }
+
+        public string GetAllFlagsJson()
+        {
+            return WebGLStringHelper.ReadAndFree(
+                WebGLBindings.LayersWebGL_GetAllFlagsJson());
+        }
+
+        public int ReloadFeatureFlags()
+        {
+            return WebGLBindings.LayersWebGL_ReloadFeatureFlags();
+        }
+
+        public string SetPersonPropertiesForFlags(string propertiesJson)
+        {
+            WebGLBindings.LayersWebGL_SetPersonPropertiesForFlags(propertiesJson);
+            return null;
+        }
+
+        public string SetFeatureFlagBootstrap(string bootstrapJson)
+        {
+            WebGLBindings.LayersWebGL_SetFeatureFlagBootstrap(bootstrapJson);
+            return null;
         }
     }
 #endif

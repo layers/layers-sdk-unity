@@ -56,7 +56,7 @@ namespace Layers.Unity.Internal
         private static bool _hasChecked;
 
         /// <summary>
-        /// Check the clipboard for a Layers attribution URL.
+        /// Check the clipboard for an Layers attribution URL.
         /// Only reads once per install (subsequent calls return cached result).
         /// Returns null if no Layers URL is found, or if already checked.
         /// </summary>

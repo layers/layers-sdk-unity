@@ -49,6 +49,7 @@ namespace Layers.Unity.Internal
         internal int SimulatedQueueDepth;
         internal bool AutoIncrementQueueDepth = true;
         internal string SimulatedSessionId = "test-session-001";
+        internal string SimulatedDebugToken;
         internal string SimulatedRemoteConfigJson;
         internal bool IsInitialized;
         internal bool IsShutdown;
@@ -154,6 +155,11 @@ namespace Layers.Unity.Internal
             return SimulatedSessionId;
         }
 
+        public string GetDebugToken()
+        {
+            return SimulatedDebugToken;
+        }
+
         public string GetRemoteConfigJson()
         {
             return SimulatedRemoteConfigJson;
@@ -166,7 +172,264 @@ namespace Layers.Unity.Internal
             return null;
         }
 
-        internal void Reset()
+        // ── Tier 1 — Super-properties / timed events / multi-group / mutators ──
+        // Captured for assertion just like the legacy mock surface.
+
+        internal readonly List<string> SetSuperPropertiesCalls = new List<string>();
+        internal readonly List<string> SetSuperPropertiesOnceCalls = new List<string>();
+        internal readonly List<string> UnregisterSuperPropertyCalls = new List<string>();
+        internal int ClearSuperPropertiesCalls;
+        internal string SimulatedSuperPropertiesJson = "{}";
+
+        internal readonly List<string> TimeEventCalls = new List<string>();
+        internal readonly List<string> CancelTimedEventCalls = new List<string>();
+        internal ulong SimulatedCancelTimedEventResult;
+
+        internal readonly List<(string groupType, string groupId)> SetGroupCalls
+            = new List<(string, string)>();
+        internal readonly List<(string groupType, string groupId)> AddGroupCalls
+            = new List<(string, string)>();
+        internal readonly List<string> RemoveGroupCalls = new List<string>();
+        internal string SimulatedGroupsJson = "{}";
+
+        internal readonly List<(string key, double delta)> IncrementCalls
+            = new List<(string, double)>();
+        internal readonly List<(string key, string valueJson)> AppendCalls
+            = new List<(string, string)>();
+        internal readonly List<(string key, string valuesJson)> UnionCalls
+            = new List<(string, string)>();
+        internal readonly List<string> UnsetCalls = new List<string>();
+
+        internal int ResetCalls;
+        internal string SimulatedDeviceId;
+        internal string SimulatedAnonymousId;
+        internal uint SimulatedSessionNumber;
+        internal string SimulatedFirstOpenTime;
+
+        internal System.Func<string, string> LastBeforeSendCallback;
+        internal int ClearBeforeSendCalls;
+
+        public string SetSuperProperties(string propertiesJson)
+        {
+            SetSuperPropertiesCalls.Add(propertiesJson);
+            return null;
+        }
+
+        public string SetSuperPropertiesOnce(string propertiesJson)
+        {
+            SetSuperPropertiesOnceCalls.Add(propertiesJson);
+            return null;
+        }
+
+        public string UnregisterSuperProperty(string key)
+        {
+            UnregisterSuperPropertyCalls.Add(key);
+            return null;
+        }
+
+        public string ClearSuperProperties()
+        {
+            ClearSuperPropertiesCalls++;
+            return null;
+        }
+
+        public string GetSuperPropertiesJson() => SimulatedSuperPropertiesJson;
+
+        public string TimeEvent(string eventName)
+        {
+            TimeEventCalls.Add(eventName);
+            return null;
+        }
+
+        public ulong CancelTimedEvent(string eventName)
+        {
+            CancelTimedEventCalls.Add(eventName);
+            return SimulatedCancelTimedEventResult;
+        }
+
+        public string SetGroup(string groupType, string groupId)
+        {
+            SetGroupCalls.Add((groupType, groupId));
+            return null;
+        }
+
+        public string AddGroup(string groupType, string groupId)
+        {
+            AddGroupCalls.Add((groupType, groupId));
+            return null;
+        }
+
+        public string RemoveGroup(string groupType)
+        {
+            RemoveGroupCalls.Add(groupType);
+            return null;
+        }
+
+        public string GetGroupsJson() => SimulatedGroupsJson;
+
+        public string Increment(string key, double delta)
+        {
+            IncrementCalls.Add((key, delta));
+            return null;
+        }
+
+        public string Append(string key, string valueJson)
+        {
+            AppendCalls.Add((key, valueJson));
+            return null;
+        }
+
+        public string Union(string key, string valuesJson)
+        {
+            UnionCalls.Add((key, valuesJson));
+            return null;
+        }
+
+        public string Unset(string key)
+        {
+            UnsetCalls.Add(key);
+            return null;
+        }
+
+        // The interface method `Reset()` collides with the legacy
+        // `internal void Reset()` test-state-clear helper, so the interface
+        // implementation is forwarded as `ILayersPlatform.Reset()` and the
+        // test helper is renamed to `ClearTestState`.
+        string ILayersPlatform.Reset()
+        {
+            ResetCalls++;
+            return null;
+        }
+
+        public string GetDeviceId() => SimulatedDeviceId;
+        public string GetAnonymousId() => SimulatedAnonymousId;
+        public uint GetSessionNumber() => SimulatedSessionNumber;
+        public string GetFirstOpenTime() => SimulatedFirstOpenTime;
+
+        public string SetBeforeSend(System.Func<string, string> callback)
+        {
+            LastBeforeSendCallback = callback;
+            return null;
+        }
+
+        public string ClearBeforeSend()
+        {
+            ClearBeforeSendCalls++;
+            return null;
+        }
+
+        // ── Tier 4 — Feature flag mock state ────────────────────────────
+
+        /// <summary>
+        /// Map of flag key → simulated JSON value string. Tests can seed
+        /// this directly, or use the helper <see cref="SimulateFlag"/>.
+        /// Reads of unknown keys return <c>"null"</c> (the canonical "no
+        /// such flag" wire value).
+        /// </summary>
+        internal readonly Dictionary<string, string> SimulatedFlagJson
+            = new Dictionary<string, string>();
+
+        internal readonly Dictionary<string, string> SimulatedFlagPayloadJson
+            = new Dictionary<string, string>();
+
+        /// <summary>Recorded flag-evaluation calls (key per call).</summary>
+        internal readonly List<string> GetFeatureFlagCalls = new List<string>();
+        internal readonly List<string> IsFeatureEnabledCalls = new List<string>();
+        internal readonly List<string> GetFeatureFlagPayloadCalls = new List<string>();
+        internal int GetAllFlagsCalls;
+        internal int ReloadFeatureFlagsCalls;
+        internal readonly List<string> SetPersonPropertiesForFlagsCalls = new List<string>();
+        internal readonly List<string> SetFeatureFlagBootstrapCalls = new List<string>();
+
+        /// <summary>
+        /// Simulated return value for the next <c>ReloadFeatureFlags</c>
+        /// call: 1 (dropped some), 0 (cache empty), -1 (error). Defaults
+        /// to 0.
+        /// </summary>
+        internal int SimulatedReloadResult;
+
+        /// <summary>
+        /// Test helper: seed a flag value as a typed C# value. Encodes
+        /// to the wire JSON shape the Rust core would produce. Pass
+        /// <c>null</c> as <paramref name="value"/> to clear the seed.
+        /// </summary>
+        internal void SimulateFlag(string key, object value)
+        {
+            if (value == null) { SimulatedFlagJson.Remove(key); return; }
+            string json;
+            if (value is bool b) json = b ? "true" : "false";
+            else if (value is string s) json = "\"" + s + "\"";
+            else json = "null";
+            SimulatedFlagJson[key] = json;
+        }
+
+        public string GetFeatureFlagJson(string flagKey)
+        {
+            GetFeatureFlagCalls.Add(flagKey);
+            return SimulatedFlagJson.TryGetValue(flagKey, out var v) ? v : "null";
+        }
+
+        public int IsFeatureEnabled(string flagKey)
+        {
+            IsFeatureEnabledCalls.Add(flagKey);
+            // Match the C ABI semantics: 1 / 0 / -1.
+            if (!SimulatedFlagJson.TryGetValue(flagKey, out var v)) return 0;
+            if (v == "true") return 1;
+            if (v == "false") return 0;
+            // Multivariate flags: any non-empty variant string is truthy.
+            if (v != null && v.Length >= 2 && v[0] == '"' && v != "\"\"") return 1;
+            return 0;
+        }
+
+        public string GetFeatureFlagPayloadJson(string flagKey)
+        {
+            GetFeatureFlagPayloadCalls.Add(flagKey);
+            return SimulatedFlagPayloadJson.TryGetValue(flagKey, out var v) ? v : "null";
+        }
+
+        public string GetAllFlagsJson()
+        {
+            GetAllFlagsCalls++;
+            // Build a JSON object string from the simulated flag map. Only
+            // concerns itself with the key set + values that are valid JSON.
+            if (SimulatedFlagJson.Count == 0) return "{}";
+            var sb = new System.Text.StringBuilder("{");
+            bool first = true;
+            foreach (var kv in SimulatedFlagJson)
+            {
+                if (!first) sb.Append(',');
+                first = false;
+                sb.Append('"').Append(kv.Key).Append("\":").Append(kv.Value);
+            }
+            sb.Append('}');
+            return sb.ToString();
+        }
+
+        public int ReloadFeatureFlags()
+        {
+            ReloadFeatureFlagsCalls++;
+            return SimulatedReloadResult;
+        }
+
+        public string SetPersonPropertiesForFlags(string propertiesJson)
+        {
+            SetPersonPropertiesForFlagsCalls.Add(propertiesJson);
+            return null;
+        }
+
+        public string SetFeatureFlagBootstrap(string bootstrapJson)
+        {
+            SetFeatureFlagBootstrapCalls.Add(bootstrapJson);
+            return null;
+        }
+
+        /// <summary>
+        /// Clear all captured mock state. Distinct from the
+        /// <see cref="ILayersPlatform.Reset"/> SDK reset path so callers
+        /// can choose whether to reset the SDK identity (which records into
+        /// <see cref="ResetCalls"/>) or just wipe the captured fixtures.
+        /// </summary>
+        internal void ClearTestState()
         {
             TrackedEvents.Clear();
             ScreenedEvents.Clear();
@@ -179,10 +442,48 @@ namespace Layers.Unity.Internal
             RemoteConfigCalls.Clear();
             SimulatedQueueDepth = 0;
             SimulatedSessionId = "test-session-001";
+            SimulatedDebugToken = null;
             SimulatedRemoteConfigJson = null;
             IsInitialized = false;
             IsShutdown = false;
             FlushCount = 0;
+
+            // Tier 1
+            SetSuperPropertiesCalls.Clear();
+            SetSuperPropertiesOnceCalls.Clear();
+            UnregisterSuperPropertyCalls.Clear();
+            ClearSuperPropertiesCalls = 0;
+            SimulatedSuperPropertiesJson = "{}";
+            TimeEventCalls.Clear();
+            CancelTimedEventCalls.Clear();
+            SimulatedCancelTimedEventResult = 0;
+            SetGroupCalls.Clear();
+            AddGroupCalls.Clear();
+            RemoveGroupCalls.Clear();
+            SimulatedGroupsJson = "{}";
+            IncrementCalls.Clear();
+            AppendCalls.Clear();
+            UnionCalls.Clear();
+            UnsetCalls.Clear();
+            ResetCalls = 0;
+            SimulatedDeviceId = null;
+            SimulatedAnonymousId = null;
+            SimulatedSessionNumber = 0;
+            SimulatedFirstOpenTime = null;
+            LastBeforeSendCallback = null;
+            ClearBeforeSendCalls = 0;
+
+            // Tier 4
+            SimulatedFlagJson.Clear();
+            SimulatedFlagPayloadJson.Clear();
+            GetFeatureFlagCalls.Clear();
+            IsFeatureEnabledCalls.Clear();
+            GetFeatureFlagPayloadCalls.Clear();
+            GetAllFlagsCalls = 0;
+            ReloadFeatureFlagsCalls = 0;
+            SetPersonPropertiesForFlagsCalls.Clear();
+            SetFeatureFlagBootstrapCalls.Clear();
+            SimulatedReloadResult = 0;
         }
     }
 
@@ -227,7 +528,7 @@ namespace Layers.Unity.Internal
         /// </summary>
         public static void Reset()
         {
-            _mockPlatform?.Reset();
+            _mockPlatform?.ClearTestState();
         }
 
         /// <summary>

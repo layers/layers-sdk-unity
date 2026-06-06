@@ -258,6 +258,205 @@ namespace Layers.Unity
             LayersSDK.Track("begin_checkout", props);
         }
 
+        // ── IAP / Paywall Lifecycle ─────────────────────────────────────
+        // Helpers for the canonical SDK events that map to Meta CAPI's
+        // StartTrial / Subscribe / Purchase / InitiateCheckout. price and
+        // currency are REQUIRED — Meta optimizes for value-per-conversion,
+        // and value=0 trains the algorithm to stop bidding on these events.
+
+        /// <summary>
+        /// Track a subscription start (initial subscription, including trials).
+        /// Fires <c>subscription_start</c>. Maps to Meta CAPI
+        /// <c>StartTrial</c> / <c>Subscribe</c>.
+        /// </summary>
+        /// <param name="price">Recurring price the user is committing to (NOT 0 even on trial).</param>
+        /// <param name="currency">ISO 4217 currency code (e.g. "USD").</param>
+        /// <param name="productId">Product / plan identifier.</param>
+        /// <param name="isTrialStart">Whether this subscription started with a free trial.</param>
+        /// <param name="transactionId">Optional transaction identifier.</param>
+        /// <param name="period">Optional subscription period (e.g. "P1W", "P1M").</param>
+        /// <param name="store">Optional store name (e.g. "app_store", "play_store").</param>
+        public static void TrackSubscriptionStart(
+            double price,
+            string currency,
+            string productId,
+            bool isTrialStart = false,
+            string transactionId = null,
+            string period = null,
+            string store = null)
+        {
+            var props = new Dictionary<string, object>
+            {
+                ["product_id"] = productId,
+                ["price"] = price,
+                ["currency"] = currency,
+                ["is_trial_start"] = isTrialStart
+            };
+
+            if (transactionId != null) props["transaction_id"] = transactionId;
+            if (period != null) props["period"] = period;
+            if (store != null) props["store"] = store;
+
+            LayersSDK.Track("subscription_start", props);
+        }
+
+        /// <summary>
+        /// Track a free trial start. Fires <c>trial_start</c>. Maps to Meta CAPI
+        /// <c>StartTrial</c>.
+        /// </summary>
+        /// <param name="recurringPrice">
+        /// Recurring price the trial converts to (NOT 0). Meta uses this for
+        /// value-per-conversion optimization.
+        /// </param>
+        /// <param name="currency">ISO 4217 currency code.</param>
+        /// <param name="productId">Product / plan identifier.</param>
+        /// <param name="trialDays">Optional trial length in days.</param>
+        /// <param name="transactionId">Optional transaction identifier.</param>
+        public static void TrackTrialStart(
+            double recurringPrice,
+            string currency,
+            string productId,
+            int? trialDays = null,
+            string transactionId = null)
+        {
+            var props = new Dictionary<string, object>
+            {
+                ["product_id"] = productId,
+                ["price"] = recurringPrice,
+                ["currency"] = currency
+            };
+
+            if (trialDays.HasValue) props["trial_days"] = trialDays.Value;
+            if (transactionId != null) props["transaction_id"] = transactionId;
+
+            LayersSDK.Track("trial_start", props);
+        }
+
+        /// <summary>
+        /// Track a free trial converting into a paid subscription. Fires
+        /// <c>trial_convert</c>. Maps to Meta CAPI <c>Subscribe</c>.
+        /// </summary>
+        /// <param name="price">Actual amount charged.</param>
+        /// <param name="currency">ISO 4217 currency code.</param>
+        /// <param name="productId">Product / plan identifier.</param>
+        /// <param name="transactionId">Optional transaction identifier.</param>
+        /// <param name="originalTransactionId">
+        /// Optional original transaction ID (links to the trial purchase).
+        /// </param>
+        public static void TrackTrialConvert(
+            double price,
+            string currency,
+            string productId,
+            string transactionId = null,
+            string originalTransactionId = null)
+        {
+            var props = new Dictionary<string, object>
+            {
+                ["product_id"] = productId,
+                ["price"] = price,
+                ["currency"] = currency
+            };
+
+            if (transactionId != null) props["transaction_id"] = transactionId;
+            if (originalTransactionId != null) props["original_transaction_id"] = originalTransactionId;
+
+            LayersSDK.Track("trial_convert", props);
+        }
+
+        /// <summary>
+        /// Track a subscription renewal. Fires <c>subscription_renew</c>. Maps
+        /// to Meta CAPI <c>Subscribe</c>.
+        /// </summary>
+        /// <param name="price">Actual amount charged on renewal.</param>
+        /// <param name="currency">ISO 4217 currency code.</param>
+        /// <param name="productId">Product / plan identifier.</param>
+        /// <param name="transactionId">Optional renewal transaction identifier.</param>
+        /// <param name="originalTransactionId">
+        /// Optional original transaction ID (links back to the initial purchase).
+        /// </param>
+        public static void TrackSubscriptionRenew(
+            double price,
+            string currency,
+            string productId,
+            string transactionId = null,
+            string originalTransactionId = null)
+        {
+            var props = new Dictionary<string, object>
+            {
+                ["product_id"] = productId,
+                ["price"] = price,
+                ["currency"] = currency
+            };
+
+            if (transactionId != null) props["transaction_id"] = transactionId;
+            if (originalTransactionId != null) props["original_transaction_id"] = originalTransactionId;
+
+            LayersSDK.Track("subscription_renew", props);
+        }
+
+        /// <summary>
+        /// Track that the user started a checkout / IAP flow (paywall tap,
+        /// StoreKit / Play Billing purchase initiated). Fires
+        /// <c>iap_purchase_started</c> by default; pass <paramref name="eventName"/>
+        /// = <c>"purchase_attempt"</c> if the host app uses that name. Maps to
+        /// Meta CAPI <c>InitiateCheckout</c>.
+        /// </summary>
+        /// <param name="price">Recurring price (same as the paywall offer).</param>
+        /// <param name="currency">ISO 4217 currency code.</param>
+        /// <param name="productId">Product / plan identifier.</param>
+        /// <param name="paywallId">Optional paywall identifier.</param>
+        /// <param name="eventName">
+        /// Event name to fire. Default <c>"iap_purchase_started"</c>; pass
+        /// <c>"purchase_attempt"</c> to use the alternate canonical name.
+        /// </param>
+        public static void TrackIapPurchaseStarted(
+            double price,
+            string currency,
+            string productId,
+            string paywallId = null,
+            string eventName = "iap_purchase_started")
+        {
+            var props = new Dictionary<string, object>
+            {
+                ["product_id"] = productId,
+                ["price"] = price,
+                ["currency"] = currency
+            };
+
+            if (paywallId != null) props["paywall_id"] = paywallId;
+
+            LayersSDK.Track(eventName, props);
+        }
+
+        /// <summary>
+        /// Track a successful purchase that completed via a paywall. Fires
+        /// <c>paywall_purchased</c>. Maps to Meta CAPI <c>Purchase</c>.
+        /// </summary>
+        /// <param name="price">Actual amount charged.</param>
+        /// <param name="currency">ISO 4217 currency code.</param>
+        /// <param name="productId">Product / plan identifier.</param>
+        /// <param name="paywallId">Optional paywall identifier.</param>
+        /// <param name="transactionId">Optional transaction identifier.</param>
+        public static void TrackPaywallPurchased(
+            double price,
+            string currency,
+            string productId,
+            string paywallId = null,
+            string transactionId = null)
+        {
+            var props = new Dictionary<string, object>
+            {
+                ["product_id"] = productId,
+                ["price"] = price,
+                ["currency"] = currency
+            };
+
+            if (paywallId != null) props["paywall_id"] = paywallId;
+            if (transactionId != null) props["transaction_id"] = transactionId;
+
+            LayersSDK.Track("paywall_purchased", props);
+        }
+
         // ── Product View Tracking ───────────────────────────────────────
 
         /// <summary>

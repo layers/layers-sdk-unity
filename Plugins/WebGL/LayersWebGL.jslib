@@ -453,6 +453,36 @@ var LayersWebGLPlugin = {
           LayersState.wasm.setConsent(entry.args[0]);
         } else if (entry.method === 'setDeviceContext') {
           LayersState.wasm.setDeviceContext(entry.args[0]);
+        } else if (entry.method === 'setSuperProperties') {
+          LayersState.wasm.setSuperProperties(entry.args[0]);
+        } else if (entry.method === 'setSuperPropertiesOnce') {
+          LayersState.wasm.setSuperPropertiesOnce(entry.args[0]);
+        } else if (entry.method === 'unregisterSuperProperty') {
+          LayersState.wasm.unregisterSuperProperty(entry.args[0]);
+        } else if (entry.method === 'clearSuperProperties') {
+          LayersState.wasm.clearSuperProperties();
+        } else if (entry.method === 'timeEvent') {
+          LayersState.wasm.timeEvent(entry.args[0]);
+        } else if (entry.method === 'setGroup') {
+          LayersState.wasm.setGroup(entry.args[0], entry.args[1]);
+        } else if (entry.method === 'addGroup') {
+          LayersState.wasm.addGroup(entry.args[0], entry.args[1]);
+        } else if (entry.method === 'removeGroup') {
+          LayersState.wasm.removeGroup(entry.args[0]);
+        } else if (entry.method === 'increment') {
+          LayersState.wasm.increment(entry.args[0], entry.args[1]);
+        } else if (entry.method === 'append') {
+          LayersState.wasm.append(entry.args[0], entry.args[1]);
+        } else if (entry.method === 'union') {
+          LayersState.wasm.union(entry.args[0], entry.args[1]);
+        } else if (entry.method === 'unset') {
+          LayersState.wasm.unset(entry.args[0]);
+        } else if (entry.method === 'reset') {
+          LayersState.wasm.reset();
+        } else if (entry.method === 'setPersonPropertiesForFlags') {
+          LayersState.wasm.setPersonPropertiesForFlags(entry.args[0]);
+        } else if (entry.method === 'setFeatureFlagBootstrap') {
+          LayersState.wasm.setFeatureFlagBootstrap(entry.args[0]);
         }
       } catch (e) {
         if (LayersState.config && LayersState.config.enable_debug) {
@@ -588,6 +618,161 @@ var LayersWebGLPlugin = {
     }
   },
 
+  // ── Tier 5: Exception auto-capture (window.onerror, unhandledrejection) ─
+  //
+  // Mirrors @layers/client's installExceptionAutoCapture (PR #138):
+  // emits $exception events with $exception_* properties for every
+  // window.error and window.unhandledrejection. Strings/values are
+  // truncated to keep payloads bounded:
+  //   $exception_message  ≤ 4 KB
+  //   $exception_stack    ≤ 10 KB
+  //   coerced reasons     ≤ 1 KB
+
+  $LayersTruncate: function (s, max) {
+    if (s == null) return '';
+    var str = '' + s;
+    if (str.length <= max) return str;
+    return str.substring(0, max);
+  },
+
+  $LayersCoerceRejection: function (reason) {
+    // Mirror packages/client/src/exceptions.ts coercion: errors map to
+    // their stack/message; non-error reasons get a stable shape.
+    if (reason && reason instanceof Error) {
+      return {
+        type: reason.name || 'Error',
+        message: LayersTruncate(reason.message || '', 4000),
+        stack: LayersTruncate(reason.stack || '', 10000)
+      };
+    }
+    if (typeof reason === 'string') {
+      return { type: 'unhandledrejection', message: LayersTruncate(reason, 4000), stack: '' };
+    }
+    if (reason == null) {
+      return { type: 'unhandledrejection', message: '' + reason, stack: '' };
+    }
+    var msg;
+    try {
+      msg = LayersTruncate(JSON.stringify(reason), 1000);
+    } catch (e) {
+      msg = LayersTruncate('' + reason, 1000);
+    }
+    return { type: 'unhandledrejection', message: msg, stack: '' };
+  },
+
+  $LayersTrackException: function (props) {
+    if (LayersState.isShutDown || !LayersState.wasm) return;
+    try {
+      LayersState.wasm.track('$exception', props, null, null);
+      var threshold = (LayersState.config && LayersState.config.flush_threshold) || 20;
+      if (LayersState.wasm.queueDepth() >= threshold) {
+        LayersFlushViaFetch();
+      }
+    } catch (e) {
+      // Never let our own tracking failure escape — that re-enters via
+      // window.onerror and recurses.
+      if (LayersState.config && LayersState.config.enable_debug) {
+        console.warn('[Layers] $exception emit failed:', e);
+      }
+    }
+  },
+
+  $LayersSetupExceptionListeners: function () {
+    if (typeof window === 'undefined') return;
+
+    LayersState.errorListener = function (event) {
+      // Cross-origin "Script error." events have null `event.error` —
+      // fall back to event.message so we still capture something.
+      var err = event && event.error;
+      var typeName = (err && err.name) || 'Error';
+      var message = (err && err.message) || (event && event.message) || 'Unknown error';
+      var stack = (err && err.stack) || '';
+      var props = {
+        $exception_type: typeName,
+        $exception_message: LayersTruncate(message, 4000),
+        $exception_stack: LayersTruncate(stack, 10000),
+        $exception_handled: false,
+        $exception_promise_rejection: false
+      };
+      if (event && event.filename) props['$exception_source'] = event.filename;
+      if (event && event.lineno > 0) props['$exception_lineno'] = event.lineno;
+      if (event && event.colno > 0) props['$exception_colno'] = event.colno;
+      LayersTrackException(props);
+    };
+
+    LayersState.rejectionListener = function (event) {
+      var coerced = LayersCoerceRejection(event && event.reason);
+      LayersTrackException({
+        $exception_type: coerced.type,
+        $exception_message: coerced.message,
+        $exception_stack: coerced.stack,
+        $exception_handled: false,
+        $exception_promise_rejection: true
+      });
+    };
+
+    window.addEventListener('error', LayersState.errorListener);
+    window.addEventListener('unhandledrejection', LayersState.rejectionListener);
+  },
+
+  $LayersCleanupExceptionListeners: function () {
+    if (typeof window === 'undefined') return;
+    if (LayersState.errorListener) {
+      window.removeEventListener('error', LayersState.errorListener);
+      LayersState.errorListener = null;
+    }
+    if (LayersState.rejectionListener) {
+      window.removeEventListener('unhandledrejection', LayersState.rejectionListener);
+      LayersState.rejectionListener = null;
+    }
+  },
+
+  // ── Tier 6: Performance auto-capture ────────────────────────────────────
+  //
+  // Emits a $performance event on first wire-up with browser navigation
+  // timings (DOMContentLoaded, load, first-byte). Custom traces from C#
+  // arrive via LayersWebGL_EmitPerformanceTrace below.
+
+  $LayersEmitNavTiming: function () {
+    if (typeof performance === 'undefined' || !performance.timing) return;
+    if (LayersState.isShutDown || !LayersState.wasm) return;
+    try {
+      var t = performance.timing;
+      // performance.timing is fixed-origin (ms since epoch). Subtract
+      // navigationStart to get app-relative offsets.
+      var navStart = t.navigationStart || 0;
+      if (navStart === 0) return;
+      var props = {};
+      if (t.domContentLoadedEventEnd) {
+        props['$dom_content_loaded_ms'] = t.domContentLoadedEventEnd - navStart;
+      }
+      if (t.loadEventEnd) {
+        props['$load_event_ms'] = t.loadEventEnd - navStart;
+      }
+      if (t.responseStart) {
+        props['$ttfb_ms'] = t.responseStart - navStart;
+      }
+      // performance.now() approximates "app start to now" in WebGL —
+      // matches the C# Time.realtimeSinceStartup * 1000 semantics.
+      if (typeof performance.now === 'function') {
+        props['$app_start_ms'] = performance.now();
+      }
+      // Skip the emit if we couldn't extract anything meaningful.
+      var hasAny = false;
+      for (var _ in props) {
+        hasAny = true;
+        break;
+      }
+      if (!hasAny) return;
+
+      LayersState.wasm.track('$performance', props, null, null);
+    } catch (e) {
+      if (LayersState.config && LayersState.config.enable_debug) {
+        console.warn('[Layers] $performance nav-timing emit failed:', e);
+      }
+    }
+  },
+
   // ══════════════════════════════════════════════════════════════════════
   // EXPORTED FUNCTIONS (called from C# via [DllImport("__Internal")])
   // ══════════════════════════════════════════════════════════════════════
@@ -685,6 +870,30 @@ var LayersWebGLPlugin = {
     // Setup lifecycle listeners (these don't require WASM — they handle
     // visibility/online events and are needed from the start)
     LayersSetupListeners();
+
+    // Tier 5: install window.error + unhandledrejection listeners
+    // (opt-out via auto_track_exceptions=false in the config JSON).
+    if (config.auto_track_exceptions !== false) {
+      LayersSetupExceptionListeners();
+    }
+
+    // Tier 6: emit a one-shot $performance event with browser navigation
+    // timings. Defer until after WASM is ready so the event lands in the
+    // real queue rather than the pre-init buffer.
+    if (config.auto_track_performance !== false) {
+      // Wire it up to fire after WASM loads. LayersLoadWasm resolves
+      // wasmReady; we poll briefly to catch it.
+      var navTimingTimer = setInterval(function () {
+        if (LayersState.wasm) {
+          clearInterval(navTimingTimer);
+          LayersEmitNavTiming();
+        }
+      }, 100);
+      // Stop polling after 10s regardless — bounds memory if WASM never loads.
+      setTimeout(function () {
+        clearInterval(navTimingTimer);
+      }, 10000);
+    }
   },
 
   // ── Event Tracking ────────────────────────────────────────────────────
@@ -1044,6 +1253,18 @@ var LayersWebGLPlugin = {
     }
   },
 
+  LayersWebGL_GetDebugToken: function () {
+    if (!LayersState.wasm) return 0;
+    try {
+      // Rust core's debugToken() returns null when debug mode is off.
+      var token = LayersState.wasm.debugToken();
+      if (token === null || token === undefined) return 0;
+      return LayersAllocString(token);
+    } catch (e) {
+      return 0;
+    }
+  },
+
   // ── Remote Config ─────────────────────────────────────────────────────
 
   LayersWebGL_GetRemoteConfigJson: function () {
@@ -1089,6 +1310,7 @@ var LayersWebGLPlugin = {
 
     // Cleanup listeners
     LayersCleanupListeners();
+    LayersCleanupExceptionListeners();
 
     // Last-chance flush via sendBeacon
     if (LayersState.wasm) {
@@ -1259,6 +1481,512 @@ var LayersWebGLPlugin = {
     if (ua.indexOf('iPhone') >= 0 || ua.indexOf('iPad') >= 0) return LayersAllocString('iOS');
     if (ua.indexOf('Linux') >= 0) return LayersAllocString('Linux');
     return LayersAllocString('WebGL');
+  },
+
+  // ── Tier 5/6 — manual reporting from C# ─────────────────────────────────
+
+  // Manually report an exception from C#. Used by LayersSDK.TrackException
+  // on WebGL when the C# code wants to flag a caught exception even though
+  // the JS-side window.error / unhandledrejection handlers cover the
+  // uncaught path automatically.
+  LayersWebGL_TrackException: function (typeNamePtr, messagePtr, stackPtr, handled) {
+    if (LayersState.isShutDown || !LayersState.wasm) return;
+    var typeName = typeNamePtr ? UTF8ToString(typeNamePtr) : 'Error';
+    var message = messagePtr ? UTF8ToString(messagePtr) : '';
+    var stack = stackPtr ? UTF8ToString(stackPtr) : '';
+    LayersTrackException({
+      $exception_type: typeName,
+      $exception_message: LayersTruncate(message, 4000),
+      $exception_stack: LayersTruncate(stack, 10000),
+      $exception_handled: handled !== 0,
+      $exception_promise_rejection: false
+    });
+  },
+
+  // Emit a custom $performance_trace event from C#. C# owns the
+  // Stopwatch.GetTimestamp() ticks → ms conversion so this just forwards.
+  LayersWebGL_EmitPerformanceTrace: function (namePtr, durationMs, metadataJsonPtr) {
+    if (LayersState.isShutDown || !LayersState.wasm) return;
+    var name = namePtr ? UTF8ToString(namePtr) : '';
+    if (!name) return;
+    var props = { $trace_name: name, $duration_ms: durationMs };
+    if (metadataJsonPtr) {
+      try {
+        var meta = JSON.parse(UTF8ToString(metadataJsonPtr));
+        if (meta && typeof meta === 'object') {
+          for (var k in meta) {
+            if (k === '$trace_name' || k === '$duration_ms') continue;
+            props[k] = meta[k];
+          }
+        }
+      } catch (e) {
+        // Ignore malformed metadata — emit the trace without it.
+      }
+    }
+    try {
+      LayersState.wasm.track('$performance_trace', props, null, null);
+    } catch (e) {
+      if (LayersState.config && LayersState.config.enable_debug) {
+        console.warn('[Layers] $performance_trace emit failed:', e);
+      }
+    }
+  },
+
+  // ── Tier 1: Super-properties ──────────────────────────────────────────
+  // Forward to the WASM core's super_properties APIs. Pre-init queueing
+  // mirrors the existing track/screen pattern so that calls made before
+  // the WASM module is ready are replayed once it loads.
+
+  LayersWebGL_SetSuperProperties: function (propertiesJsonPtr) {
+    if (LayersState.isShutDown) return;
+    var propsJson = UTF8ToString(propertiesJsonPtr);
+    if (!LayersState.wasm) {
+      if (LayersState.preInitQueue.length < LayersState.PRE_INIT_MAX) {
+        var p = {};
+        try {
+          p = JSON.parse(propsJson);
+        } catch (e) {}
+        LayersState.preInitQueue.push({ method: 'setSuperProperties', args: [p] });
+      }
+      return;
+    }
+    try {
+      LayersState.wasm.setSuperProperties(JSON.parse(propsJson));
+    } catch (e) {
+      if (LayersState.config && LayersState.config.enable_debug) {
+        console.warn('[Layers] WebGL setSuperProperties failed:', e);
+      }
+    }
+  },
+
+  LayersWebGL_SetSuperPropertiesOnce: function (propertiesJsonPtr) {
+    if (LayersState.isShutDown) return;
+    var propsJson = UTF8ToString(propertiesJsonPtr);
+    if (!LayersState.wasm) {
+      if (LayersState.preInitQueue.length < LayersState.PRE_INIT_MAX) {
+        var p = {};
+        try {
+          p = JSON.parse(propsJson);
+        } catch (e) {}
+        LayersState.preInitQueue.push({ method: 'setSuperPropertiesOnce', args: [p] });
+      }
+      return;
+    }
+    try {
+      LayersState.wasm.setSuperPropertiesOnce(JSON.parse(propsJson));
+    } catch (e) {
+      if (LayersState.config && LayersState.config.enable_debug) {
+        console.warn('[Layers] WebGL setSuperPropertiesOnce failed:', e);
+      }
+    }
+  },
+
+  LayersWebGL_UnregisterSuperProperty: function (keyPtr) {
+    if (LayersState.isShutDown) return;
+    var key = UTF8ToString(keyPtr);
+    if (!LayersState.wasm) {
+      if (LayersState.preInitQueue.length < LayersState.PRE_INIT_MAX) {
+        LayersState.preInitQueue.push({ method: 'unregisterSuperProperty', args: [key] });
+      }
+      return;
+    }
+    try {
+      LayersState.wasm.unregisterSuperProperty(key);
+    } catch (e) {
+      if (LayersState.config && LayersState.config.enable_debug) {
+        console.warn('[Layers] WebGL unregisterSuperProperty failed:', e);
+      }
+    }
+  },
+
+  LayersWebGL_ClearSuperProperties: function () {
+    if (LayersState.isShutDown) return;
+    if (!LayersState.wasm) {
+      if (LayersState.preInitQueue.length < LayersState.PRE_INIT_MAX) {
+        LayersState.preInitQueue.push({ method: 'clearSuperProperties', args: [] });
+      }
+      return;
+    }
+    try {
+      LayersState.wasm.clearSuperProperties();
+    } catch (e) {
+      if (LayersState.config && LayersState.config.enable_debug) {
+        console.warn('[Layers] WebGL clearSuperProperties failed:', e);
+      }
+    }
+  },
+
+  LayersWebGL_GetSuperPropertiesJson: function () {
+    if (!LayersState.wasm) return LayersAllocString('{}');
+    try {
+      var v = LayersState.wasm.getSuperProperties();
+      return LayersAllocString(JSON.stringify(v || {}));
+    } catch (e) {
+      return LayersAllocString('{}');
+    }
+  },
+
+  // ── Tier 1: Timed events ──────────────────────────────────────────────
+
+  LayersWebGL_TimeEvent: function (eventNamePtr) {
+    if (LayersState.isShutDown) return;
+    var name = UTF8ToString(eventNamePtr);
+    if (!LayersState.wasm) {
+      if (LayersState.preInitQueue.length < LayersState.PRE_INIT_MAX) {
+        LayersState.preInitQueue.push({ method: 'timeEvent', args: [name] });
+      }
+      return;
+    }
+    try {
+      LayersState.wasm.timeEvent(name);
+    } catch (e) {
+      if (LayersState.config && LayersState.config.enable_debug) {
+        console.warn('[Layers] WebGL timeEvent failed:', e);
+      }
+    }
+  },
+
+  LayersWebGL_CancelTimedEvent: function (eventNamePtr) {
+    if (!LayersState.wasm) return 0;
+    var name = UTF8ToString(eventNamePtr);
+    try {
+      // wasm-bindgen returns BigInt for u64; coerce to Number for the
+      // C# double return type. Values exceed 2^53 only after ~285,000 years.
+      var result = LayersState.wasm.cancelTimedEvent(name);
+      return Number(result);
+    } catch (e) {
+      return 0;
+    }
+  },
+
+  // ── Tier 1: Multi-group ───────────────────────────────────────────────
+
+  LayersWebGL_SetGroup: function (groupTypePtr, groupIdPtr) {
+    if (LayersState.isShutDown) return;
+    var t = UTF8ToString(groupTypePtr);
+    var id = groupIdPtr ? UTF8ToString(groupIdPtr) : '';
+    if (!LayersState.wasm) {
+      if (LayersState.preInitQueue.length < LayersState.PRE_INIT_MAX) {
+        LayersState.preInitQueue.push({ method: 'setGroup', args: [t, id] });
+      }
+      return;
+    }
+    try {
+      LayersState.wasm.setGroup(t, id);
+    } catch (e) {
+      if (LayersState.config && LayersState.config.enable_debug) {
+        console.warn('[Layers] WebGL setGroup failed:', e);
+      }
+    }
+  },
+
+  LayersWebGL_AddGroup: function (groupTypePtr, groupIdPtr) {
+    if (LayersState.isShutDown) return;
+    var t = UTF8ToString(groupTypePtr);
+    var id = groupIdPtr ? UTF8ToString(groupIdPtr) : '';
+    if (!LayersState.wasm) {
+      if (LayersState.preInitQueue.length < LayersState.PRE_INIT_MAX) {
+        LayersState.preInitQueue.push({ method: 'addGroup', args: [t, id] });
+      }
+      return;
+    }
+    try {
+      LayersState.wasm.addGroup(t, id);
+    } catch (e) {
+      if (LayersState.config && LayersState.config.enable_debug) {
+        console.warn('[Layers] WebGL addGroup failed:', e);
+      }
+    }
+  },
+
+  LayersWebGL_RemoveGroup: function (groupTypePtr) {
+    if (LayersState.isShutDown) return;
+    var t = UTF8ToString(groupTypePtr);
+    if (!LayersState.wasm) {
+      if (LayersState.preInitQueue.length < LayersState.PRE_INIT_MAX) {
+        LayersState.preInitQueue.push({ method: 'removeGroup', args: [t] });
+      }
+      return;
+    }
+    try {
+      LayersState.wasm.removeGroup(t);
+    } catch (e) {
+      if (LayersState.config && LayersState.config.enable_debug) {
+        console.warn('[Layers] WebGL removeGroup failed:', e);
+      }
+    }
+  },
+
+  LayersWebGL_GetGroupsJson: function () {
+    if (!LayersState.wasm) return LayersAllocString('{}');
+    try {
+      var v = LayersState.wasm.getGroups();
+      return LayersAllocString(JSON.stringify(v || {}));
+    } catch (e) {
+      return LayersAllocString('{}');
+    }
+  },
+
+  // ── Tier 1: User-property mutators ────────────────────────────────────
+
+  LayersWebGL_Increment: function (keyPtr, delta) {
+    if (LayersState.isShutDown) return;
+    var k = UTF8ToString(keyPtr);
+    if (!LayersState.wasm) {
+      if (LayersState.preInitQueue.length < LayersState.PRE_INIT_MAX) {
+        LayersState.preInitQueue.push({ method: 'increment', args: [k, delta] });
+      }
+      return;
+    }
+    try {
+      LayersState.wasm.increment(k, delta);
+    } catch (e) {
+      if (LayersState.config && LayersState.config.enable_debug) {
+        console.warn('[Layers] WebGL increment failed:', e);
+      }
+    }
+  },
+
+  LayersWebGL_Append: function (keyPtr, valueJsonPtr) {
+    if (LayersState.isShutDown) return;
+    var k = UTF8ToString(keyPtr);
+    var json = UTF8ToString(valueJsonPtr);
+    if (!LayersState.wasm) {
+      if (LayersState.preInitQueue.length < LayersState.PRE_INIT_MAX) {
+        var v = null;
+        try {
+          v = JSON.parse(json);
+        } catch (e) {}
+        LayersState.preInitQueue.push({ method: 'append', args: [k, v] });
+      }
+      return;
+    }
+    try {
+      LayersState.wasm.append(k, JSON.parse(json));
+    } catch (e) {
+      if (LayersState.config && LayersState.config.enable_debug) {
+        console.warn('[Layers] WebGL append failed:', e);
+      }
+    }
+  },
+
+  LayersWebGL_Union: function (keyPtr, valuesJsonPtr) {
+    if (LayersState.isShutDown) return;
+    var k = UTF8ToString(keyPtr);
+    var json = UTF8ToString(valuesJsonPtr);
+    if (!LayersState.wasm) {
+      if (LayersState.preInitQueue.length < LayersState.PRE_INIT_MAX) {
+        var arr = [];
+        try {
+          arr = JSON.parse(json);
+        } catch (e) {}
+        LayersState.preInitQueue.push({ method: 'union', args: [k, arr] });
+      }
+      return;
+    }
+    try {
+      LayersState.wasm.union(k, JSON.parse(json));
+    } catch (e) {
+      if (LayersState.config && LayersState.config.enable_debug) {
+        console.warn('[Layers] WebGL union failed:', e);
+      }
+    }
+  },
+
+  LayersWebGL_Unset: function (keyPtr) {
+    if (LayersState.isShutDown) return;
+    var k = UTF8ToString(keyPtr);
+    if (!LayersState.wasm) {
+      if (LayersState.preInitQueue.length < LayersState.PRE_INIT_MAX) {
+        LayersState.preInitQueue.push({ method: 'unset', args: [k] });
+      }
+      return;
+    }
+    try {
+      LayersState.wasm.unset(k);
+    } catch (e) {
+      if (LayersState.config && LayersState.config.enable_debug) {
+        console.warn('[Layers] WebGL unset failed:', e);
+      }
+    }
+  },
+
+  // ── Tier 1: Identity reset + ID accessors ─────────────────────────────
+
+  LayersWebGL_Reset: function () {
+    if (LayersState.isShutDown) return;
+    if (!LayersState.wasm) {
+      if (LayersState.preInitQueue.length < LayersState.PRE_INIT_MAX) {
+        LayersState.preInitQueue.push({ method: 'reset', args: [] });
+      }
+      return;
+    }
+    try {
+      LayersState.wasm.reset();
+    } catch (e) {
+      if (LayersState.config && LayersState.config.enable_debug) {
+        console.warn('[Layers] WebGL reset failed:', e);
+      }
+    }
+  },
+
+  LayersWebGL_GetDeviceId: function () {
+    if (!LayersState.wasm) return 0;
+    try {
+      var v = LayersState.wasm.getDeviceId();
+      if (v == null) return 0;
+      return LayersAllocString(v);
+    } catch (e) {
+      return 0;
+    }
+  },
+
+  LayersWebGL_GetAnonymousId: function () {
+    if (!LayersState.wasm) return 0;
+    try {
+      var v = LayersState.wasm.getAnonymousId();
+      if (v == null) return 0;
+      return LayersAllocString(v);
+    } catch (e) {
+      return 0;
+    }
+  },
+
+  LayersWebGL_GetSessionNumber: function () {
+    if (!LayersState.wasm) return 0;
+    try {
+      return LayersState.wasm.getSessionNumber() >>> 0;
+    } catch (e) {
+      return 0;
+    }
+  },
+
+  LayersWebGL_GetFirstOpenTime: function () {
+    if (!LayersState.wasm) return 0;
+    try {
+      var v = LayersState.wasm.getFirstOpenTime();
+      if (v == null) return 0;
+      return LayersAllocString(v);
+    } catch (e) {
+      return 0;
+    }
+  },
+
+  // ── Tier 4: Feature flags ─────────────────────────────────────────────
+  //
+  // Forward to the WASM core's feature flag APIs (camelCase per
+  // wasm-bindgen). All return JSON-encoded strings so the C# side has the
+  // same contract as the C ABI native path. When WASM isn't ready yet the
+  // accessors return "null" rather than queueing — flag reads are
+  // intentionally fail-closed and synchronous (consumer code wants to
+  // branch on the value, not await it).
+
+  LayersWebGL_GetFeatureFlag: function (flagKeyPtr) {
+    if (!LayersState.wasm) return LayersAllocString('null');
+    var key = UTF8ToString(flagKeyPtr);
+    try {
+      var v = LayersState.wasm.getFeatureFlag(key);
+      // wasm-bindgen returns a JS value (string | bool | null).
+      return LayersAllocString(JSON.stringify(v == null ? null : v));
+    } catch (e) {
+      if (LayersState.config && LayersState.config.enable_debug) {
+        console.warn('[Layers] getFeatureFlag failed:', e);
+      }
+      return LayersAllocString('null');
+    }
+  },
+
+  LayersWebGL_IsFeatureEnabled: function (flagKeyPtr) {
+    if (!LayersState.wasm) return -1;
+    var key = UTF8ToString(flagKeyPtr);
+    try {
+      return LayersState.wasm.isFeatureEnabled(key) ? 1 : 0;
+    } catch (e) {
+      return -1;
+    }
+  },
+
+  LayersWebGL_GetFeatureFlagPayload: function (flagKeyPtr) {
+    if (!LayersState.wasm) return LayersAllocString('null');
+    var key = UTF8ToString(flagKeyPtr);
+    try {
+      var p = LayersState.wasm.getFeatureFlagPayload(key);
+      return LayersAllocString(JSON.stringify(p == null ? null : p));
+    } catch (e) {
+      if (LayersState.config && LayersState.config.enable_debug) {
+        console.warn('[Layers] getFeatureFlagPayload failed:', e);
+      }
+      return LayersAllocString('null');
+    }
+  },
+
+  LayersWebGL_GetAllFlagsJson: function () {
+    if (!LayersState.wasm) return LayersAllocString('{}');
+    try {
+      var v = LayersState.wasm.getAllFlags();
+      return LayersAllocString(JSON.stringify(v || {}));
+    } catch (e) {
+      return LayersAllocString('{}');
+    }
+  },
+
+  LayersWebGL_ReloadFeatureFlags: function () {
+    if (!LayersState.wasm) return -1;
+    try {
+      return LayersState.wasm.reloadFeatureFlags() ? 1 : 0;
+    } catch (e) {
+      return -1;
+    }
+  },
+
+  LayersWebGL_SetPersonPropertiesForFlags: function (propertiesJsonPtr) {
+    if (LayersState.isShutDown) return;
+    var propsJson = UTF8ToString(propertiesJsonPtr);
+    if (!LayersState.wasm) {
+      if (LayersState.preInitQueue.length < LayersState.PRE_INIT_MAX) {
+        var props = {};
+        try {
+          props = JSON.parse(propsJson);
+        } catch (e) {}
+        LayersState.preInitQueue.push({
+          method: 'setPersonPropertiesForFlags',
+          args: [props]
+        });
+      }
+      return;
+    }
+    try {
+      LayersState.wasm.setPersonPropertiesForFlags(JSON.parse(propsJson));
+    } catch (e) {
+      if (LayersState.config && LayersState.config.enable_debug) {
+        console.warn('[Layers] setPersonPropertiesForFlags failed:', e);
+      }
+    }
+  },
+
+  LayersWebGL_SetFeatureFlagBootstrap: function (bootstrapJsonPtr) {
+    if (LayersState.isShutDown) return;
+    var bootstrapJson = UTF8ToString(bootstrapJsonPtr);
+    if (!LayersState.wasm) {
+      if (LayersState.preInitQueue.length < LayersState.PRE_INIT_MAX) {
+        var data = {};
+        try {
+          data = JSON.parse(bootstrapJson);
+        } catch (e) {}
+        LayersState.preInitQueue.push({
+          method: 'setFeatureFlagBootstrap',
+          args: [data]
+        });
+      }
+      return;
+    }
+    try {
+      LayersState.wasm.setFeatureFlagBootstrap(JSON.parse(bootstrapJson));
+    } catch (e) {
+      if (LayersState.config && LayersState.config.enable_debug) {
+        console.warn('[Layers] setFeatureFlagBootstrap failed:', e);
+      }
+    }
   }
 };
 
@@ -1284,5 +2012,12 @@ autoAddDeps(LayersWebGLPlugin, '$LayersBuildDeepLinkProps');
 autoAddDeps(LayersWebGLPlugin, '$LayersTrackDeepLink');
 autoAddDeps(LayersWebGLPlugin, '$LayersSetupSpaListeners');
 autoAddDeps(LayersWebGLPlugin, '$LayersCleanupSpaListeners');
+// Tier 5/6 helpers
+autoAddDeps(LayersWebGLPlugin, '$LayersTruncate');
+autoAddDeps(LayersWebGLPlugin, '$LayersCoerceRejection');
+autoAddDeps(LayersWebGLPlugin, '$LayersTrackException');
+autoAddDeps(LayersWebGLPlugin, '$LayersSetupExceptionListeners');
+autoAddDeps(LayersWebGLPlugin, '$LayersCleanupExceptionListeners');
+autoAddDeps(LayersWebGLPlugin, '$LayersEmitNavTiming');
 
 mergeInto(LibraryManager.library, LayersWebGLPlugin);

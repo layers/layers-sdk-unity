@@ -173,6 +173,14 @@ namespace Layers.Unity.Internal
         [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
         internal static extern IntPtr layers_get_session_id();
 
+        /// <summary>
+        /// Get the per-device DebugView token as a heap-allocated C string,
+        /// or IntPtr.Zero if `debug` was not enabled at init. Caller MUST
+        /// free via layers_free_string.
+        /// </summary>
+        [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern IntPtr layers_get_debug_token();
+
         // ── Remote Config ──────────────────────────────────────────────
 
         /// <summary>
@@ -192,6 +200,254 @@ namespace Layers.Unity.Internal
         internal static extern IntPtr layers_update_remote_config(
             [MarshalAs(UnmanagedType.LPUTF8Str)] string config_json,
             [MarshalAs(UnmanagedType.LPUTF8Str)] string etag);
+
+        // ── Tier 1: Super-properties ───────────────────────────────────
+
+        /// <summary>
+        /// Register super-properties merged into every subsequent track/screen call.
+        /// </summary>
+        [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern IntPtr layers_set_super_properties(
+            [MarshalAs(UnmanagedType.LPUTF8Str)] string properties_json);
+
+        /// <summary>
+        /// Register super-properties only for keys not previously registered.
+        /// </summary>
+        [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern IntPtr layers_set_super_properties_once(
+            [MarshalAs(UnmanagedType.LPUTF8Str)] string properties_json);
+
+        /// <summary>
+        /// Remove a single super-property by key.
+        /// </summary>
+        [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern IntPtr layers_unregister_super_property(
+            [MarshalAs(UnmanagedType.LPUTF8Str)] string key);
+
+        /// <summary>
+        /// Clear all super-properties and the once-keys history.
+        /// </summary>
+        [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern IntPtr layers_clear_super_properties();
+
+        /// <summary>
+        /// Snapshot of current super-properties as a heap-allocated JSON C string.
+        /// Caller MUST free via layers_free_string.
+        /// </summary>
+        [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern IntPtr layers_get_super_properties_json();
+
+        // ── Tier 1: Timed events ───────────────────────────────────────
+
+        /// <summary>
+        /// Start a duration timer for the next track(name, ...) call.
+        /// </summary>
+        [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern IntPtr layers_time_event(
+            [MarshalAs(UnmanagedType.LPUTF8Str)] string event_name);
+
+        /// <summary>
+        /// Cancel a timed event without emitting it. Returns elapsed milliseconds, or 0.
+        /// </summary>
+        [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern ulong layers_cancel_timed_event(
+            [MarshalAs(UnmanagedType.LPUTF8Str)] string event_name);
+
+        // ── Tier 1: Multi-group ────────────────────────────────────────
+
+        /// <summary>
+        /// Set membership for a single group_type. Pass empty group_id to remove.
+        /// </summary>
+        [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern IntPtr layers_set_group(
+            [MarshalAs(UnmanagedType.LPUTF8Str)] string group_type,
+            [MarshalAs(UnmanagedType.LPUTF8Str)] string group_id);
+
+        /// <summary>
+        /// Add a group membership without overwriting other types.
+        /// </summary>
+        [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern IntPtr layers_add_group(
+            [MarshalAs(UnmanagedType.LPUTF8Str)] string group_type,
+            [MarshalAs(UnmanagedType.LPUTF8Str)] string group_id);
+
+        /// <summary>
+        /// Remove a single group_type from the membership map.
+        /// </summary>
+        [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern IntPtr layers_remove_group(
+            [MarshalAs(UnmanagedType.LPUTF8Str)] string group_type);
+
+        /// <summary>
+        /// Snapshot of $groups as a heap-allocated JSON C string.
+        /// Caller MUST free via layers_free_string.
+        /// </summary>
+        [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern IntPtr layers_get_groups_json();
+
+        // ── Tier 1: User-property mutators ─────────────────────────────
+
+        /// <summary>
+        /// Increment a numeric user property by delta (negative decrements).
+        /// </summary>
+        [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern IntPtr layers_increment(
+            [MarshalAs(UnmanagedType.LPUTF8Str)] string key,
+            double delta);
+
+        /// <summary>
+        /// Append a value (JSON-encoded) to a list user property.
+        /// </summary>
+        [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern IntPtr layers_append(
+            [MarshalAs(UnmanagedType.LPUTF8Str)] string key,
+            [MarshalAs(UnmanagedType.LPUTF8Str)] string value_json);
+
+        /// <summary>
+        /// Union an array (JSON-encoded) into a list user property.
+        /// </summary>
+        [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern IntPtr layers_union(
+            [MarshalAs(UnmanagedType.LPUTF8Str)] string key,
+            [MarshalAs(UnmanagedType.LPUTF8Str)] string values_json);
+
+        /// <summary>
+        /// Remove a user property. Maps to $unset.
+        /// </summary>
+        [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern IntPtr layers_unset(
+            [MarshalAs(UnmanagedType.LPUTF8Str)] string key);
+
+        // ── Tier 1: Identity reset + ID accessors ──────────────────────
+
+        /// <summary>
+        /// Clear identity, rotate device_id/anonymous_id, clear super-properties + groups.
+        /// </summary>
+        [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern IntPtr layers_reset();
+
+        /// <summary>
+        /// Get the stable per-install device ID. Caller MUST free via layers_free_string.
+        /// </summary>
+        [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern IntPtr layers_get_device_id();
+
+        /// <summary>
+        /// Get the anonymous ID. Caller MUST free via layers_free_string.
+        /// </summary>
+        [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern IntPtr layers_get_anonymous_id();
+
+        /// <summary>
+        /// Get the monotonic session counter. Returns 0 if not initialized.
+        /// </summary>
+        [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern uint layers_get_session_number();
+
+        /// <summary>
+        /// Get the SDK first-open timestamp as ISO-8601, or null if not set.
+        /// Caller MUST free via layers_free_string.
+        /// </summary>
+        [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern IntPtr layers_get_first_open_time();
+
+        // ── Tier 1: before_send filter hook ────────────────────────────
+
+        /// <summary>
+        /// C ABI signature for the `before_send` filter callback.
+        ///
+        /// Receives the event JSON as a C string. Return:
+        /// - IntPtr.Zero to drop the event
+        /// - A heap-allocated C string (e.g. <c>Marshal.StringToCoTaskMemUTF8</c>)
+        ///   with the (possibly mutated) event JSON to keep the event. The
+        ///   Rust core copies the contents and then invokes the registered
+        ///   <see cref="BeforeSendFreeCallbackDelegate"/> to release the buffer.
+        /// </summary>
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        internal delegate IntPtr BeforeSendCallbackDelegate(IntPtr eventJsonPtr);
+
+        /// <summary>
+        /// C ABI signature for freeing buffers returned by
+        /// <see cref="BeforeSendCallbackDelegate"/>.
+        /// </summary>
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        internal delegate void BeforeSendFreeCallbackDelegate(IntPtr ptr);
+
+        /// <summary>
+        /// Register a before_send filter callback. Pass null/null to clear.
+        /// Returns null on success, error string on failure.
+        /// </summary>
+        [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern IntPtr layers_set_before_send(
+            BeforeSendCallbackDelegate callback,
+            BeforeSendFreeCallbackDelegate free_callback);
+
+        /// <summary>
+        /// Clear a previously-registered before_send callback.
+        /// Returns null on success, error string on failure.
+        /// </summary>
+        [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern IntPtr layers_clear_before_send();
+
+        // ── Tier 4: Feature flags ──────────────────────────────────────
+
+        /// <summary>
+        /// Evaluate a feature flag. Returns a heap-allocated JSON-encoded
+        /// C string ("true", "false", "\"variant_key\"", "null").
+        /// Caller MUST free via <see cref="layers_free_string"/>.
+        /// Side-effect: emits one <c>$feature_flag_called</c> event per
+        /// (flag_key, response) pair per session.
+        /// </summary>
+        [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern IntPtr layers_get_feature_flag(
+            [MarshalAs(UnmanagedType.LPUTF8Str)] string flag_key);
+
+        /// <summary>
+        /// Truthy-check shortcut. Returns 1 (true), 0 (false), or -1
+        /// (error / not initialized).
+        /// </summary>
+        [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int layers_is_feature_enabled(
+            [MarshalAs(UnmanagedType.LPUTF8Str)] string flag_key);
+
+        /// <summary>
+        /// Look up the JSON payload attached to a flag. Returns "null" if
+        /// the flag has no payload. Does NOT emit exposure. Caller MUST free.
+        /// </summary>
+        [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern IntPtr layers_get_feature_flag_payload(
+            [MarshalAs(UnmanagedType.LPUTF8Str)] string flag_key);
+
+        /// <summary>
+        /// Snapshot every known flag's current value as a JSON object string.
+        /// Does NOT emit exposure events. Caller MUST free.
+        /// </summary>
+        [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern IntPtr layers_get_all_flags_json();
+
+        /// <summary>
+        /// Drop cached flag definitions. Returns 1 if any were dropped, 0
+        /// if none, -1 on error.
+        /// </summary>
+        [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int layers_reload_feature_flags();
+
+        /// <summary>
+        /// Override person properties for flag evaluation. JSON object.
+        /// Clears the exposure dedup cache so flipped responses re-emit.
+        /// </summary>
+        [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern IntPtr layers_set_person_properties_for_flags(
+            [MarshalAs(UnmanagedType.LPUTF8Str)] string properties_json);
+
+        /// <summary>
+        /// Seed bootstrap flag values + payloads (SSR pattern). JSON object
+        /// matching <c>BootstrapData</c>: <c>{ "feature_flags": {...},
+        /// "feature_flag_payloads": {...} }</c>.
+        /// </summary>
+        [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern IntPtr layers_set_feature_flag_bootstrap(
+            [MarshalAs(UnmanagedType.LPUTF8Str)] string bootstrap_json);
 
         // ── Memory Management ──────────────────────────────────────────
 

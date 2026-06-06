@@ -27,6 +27,21 @@ namespace Layers.Unity.Internal
             return sb.ToString();
         }
 
+        /// <summary>
+        /// Serialize an arbitrary value to a JSON string. Supports the same
+        /// type set as <see cref="Serialize(Dictionary{string, object})"/> —
+        /// strings, numbers, booleans, null, nested dictionaries, and lists.
+        /// Used by the Tier 1 user-property mutators (<c>append</c>,
+        /// <c>union</c>) which need to JSON-encode a single scalar / array.
+        /// </summary>
+        internal static string SerializeAny(object value)
+        {
+            if (value == null) return "null";
+            var sb = new StringBuilder(64);
+            SerializeValue(sb, value);
+            return sb.ToString();
+        }
+
         private static void SerializeObject(StringBuilder sb, Dictionary<string, object> dict)
         {
             sb.Append('{');

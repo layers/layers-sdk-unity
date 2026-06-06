@@ -94,6 +94,9 @@ namespace Layers.Unity.Internal
         [DllImport("__Internal")]
         internal static extern IntPtr LayersWebGL_GetSessionId();
 
+        [DllImport("__Internal")]
+        internal static extern IntPtr LayersWebGL_GetDebugToken();
+
         // ── Remote Config ──────────────────────────────────────────────
 
         [DllImport("__Internal")]
@@ -154,6 +157,99 @@ namespace Layers.Unity.Internal
 
         [DllImport("__Internal")]
         internal static extern IntPtr LayersWebGL_GetPlatformOS();
+
+        // ── Tier 1: Super-properties ───────────────────────────────────
+
+        [DllImport("__Internal")]
+        internal static extern void LayersWebGL_SetSuperProperties(string propertiesJson);
+
+        [DllImport("__Internal")]
+        internal static extern void LayersWebGL_SetSuperPropertiesOnce(string propertiesJson);
+
+        [DllImport("__Internal")]
+        internal static extern void LayersWebGL_UnregisterSuperProperty(string key);
+
+        [DllImport("__Internal")]
+        internal static extern void LayersWebGL_ClearSuperProperties();
+
+        [DllImport("__Internal")]
+        internal static extern IntPtr LayersWebGL_GetSuperPropertiesJson();
+
+        // ── Tier 1: Timed events ───────────────────────────────────────
+
+        [DllImport("__Internal")]
+        internal static extern void LayersWebGL_TimeEvent(string eventName);
+
+        [DllImport("__Internal")]
+        internal static extern double LayersWebGL_CancelTimedEvent(string eventName);
+
+        // ── Tier 1: Multi-group ────────────────────────────────────────
+
+        [DllImport("__Internal")]
+        internal static extern void LayersWebGL_SetGroup(string groupType, string groupId);
+
+        [DllImport("__Internal")]
+        internal static extern void LayersWebGL_AddGroup(string groupType, string groupId);
+
+        [DllImport("__Internal")]
+        internal static extern void LayersWebGL_RemoveGroup(string groupType);
+
+        [DllImport("__Internal")]
+        internal static extern IntPtr LayersWebGL_GetGroupsJson();
+
+        // ── Tier 1: User-property mutators ─────────────────────────────
+
+        [DllImport("__Internal")]
+        internal static extern void LayersWebGL_Increment(string key, double delta);
+
+        [DllImport("__Internal")]
+        internal static extern void LayersWebGL_Append(string key, string valueJson);
+
+        [DllImport("__Internal")]
+        internal static extern void LayersWebGL_Union(string key, string valuesJson);
+
+        [DllImport("__Internal")]
+        internal static extern void LayersWebGL_Unset(string key);
+
+        // ── Tier 1: Identity reset + ID accessors ──────────────────────
+
+        [DllImport("__Internal")]
+        internal static extern void LayersWebGL_Reset();
+
+        [DllImport("__Internal")]
+        internal static extern IntPtr LayersWebGL_GetDeviceId();
+
+        [DllImport("__Internal")]
+        internal static extern IntPtr LayersWebGL_GetAnonymousId();
+
+        [DllImport("__Internal")]
+        internal static extern uint LayersWebGL_GetSessionNumber();
+
+        [DllImport("__Internal")]
+        internal static extern IntPtr LayersWebGL_GetFirstOpenTime();
+
+        // ── Tier 4: Feature flags ──────────────────────────────────────
+
+        [DllImport("__Internal")]
+        internal static extern IntPtr LayersWebGL_GetFeatureFlag(string flagKey);
+
+        [DllImport("__Internal")]
+        internal static extern int LayersWebGL_IsFeatureEnabled(string flagKey);
+
+        [DllImport("__Internal")]
+        internal static extern IntPtr LayersWebGL_GetFeatureFlagPayload(string flagKey);
+
+        [DllImport("__Internal")]
+        internal static extern IntPtr LayersWebGL_GetAllFlagsJson();
+
+        [DllImport("__Internal")]
+        internal static extern int LayersWebGL_ReloadFeatureFlags();
+
+        [DllImport("__Internal")]
+        internal static extern void LayersWebGL_SetPersonPropertiesForFlags(string propertiesJson);
+
+        [DllImport("__Internal")]
+        internal static extern void LayersWebGL_SetFeatureFlagBootstrap(string bootstrapJson);
     }
 #endif
 }
