@@ -143,6 +143,38 @@ namespace Layers.Unity.Internal
             [MarshalAs(UnmanagedType.LPUTF8Str)] string events_json);
 
         /// <summary>
+        /// Single delivery gate owned by the Rust core (ADR 0001): privacy
+        /// (consent/DNT), server-requested Retry-After delay, and the circuit
+        /// breaker. Returns 1 if a flush should be attempted now, 0 otherwise.
+        /// May claim the breaker's half-open probe slot — call only when there
+        /// are events to send, and always follow a 1 with
+        /// <see cref="layers_record_flush_result"/>.
+        /// </summary>
+        [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern byte layers_should_attempt_flush();
+
+        /// <summary>
+        /// Report the outcome of a delivery attempt (status 0 = no response /
+        /// network error) and get the verdict for the in-flight batch:
+        /// 1 = Delivered (done), 2 = RetryLater (requeue the batch),
+        /// 3 = Drop (discard the batch, surface the error).
+        /// </summary>
+        [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern byte layers_record_flush_result(
+            ushort status,
+            [MarshalAs(UnmanagedType.LPUTF8Str)] string retry_after_header);
+
+        /// <summary>
+        /// Abort a flush attempt that never reached the wire (queue raced
+        /// empty, URL/header setup failed). Releases a claimed half-open
+        /// breaker probe without counting a delivery failure — use instead
+        /// of <see cref="layers_record_flush_result"/> when NO request was
+        /// made.
+        /// </summary>
+        [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern void layers_abort_flush_attempt();
+
+        /// <summary>
         /// Return flush headers as a JSON string of [key, value] pairs.
         /// Caller MUST free via layers_free_string.
         /// </summary>

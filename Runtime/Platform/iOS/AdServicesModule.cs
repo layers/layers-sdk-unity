@@ -33,6 +33,9 @@ namespace Layers.Unity
 
         [DllImport("__Internal")]
         private static extern IntPtr layers_adservices_get_token();
+
+        [DllImport("__Internal")]
+        private static extern void layers_adservices_free_string(IntPtr ptr);
 #endif
 
         /// <summary>
@@ -71,7 +74,10 @@ namespace Layers.Unity
                 return null;
             }
 
-            string token = Marshal.PtrToStringAnsi(ptr);
+            // Marshaling copies the string; the native strdup allocation
+            // must be freed explicitly (it used to leak on every call).
+            string token = Marshal.PtrToStringUTF8(ptr);
+            layers_adservices_free_string(ptr);
             // Native side returns empty string when not available.
             if (string.IsNullOrEmpty(token))
             {

@@ -40,7 +40,18 @@ namespace Layers.Unity
         // Delegate type matching the native callback signature.
         private delegate void ATTCallbackDelegate(int status);
 
-        private static Action<LayersATTStatus> _pendingCallback;
+        // Rooted static delegate instance: the native side invokes the
+        // function pointer ASYNCHRONOUSLY (after the user answers the
+        // dialog), so a temporary method-group delegate could be collected
+        // before the callback fires. Works under IL2CPP by accident (static
+        // reverse thunks stay valid); rooting makes it correct by contract.
+        private static readonly ATTCallbackDelegate NativeCallback = OnNativeTrackingResult;
+
+        // All callers waiting on the in-flight ATT prompt. A second
+        // RequestTracking before the dialog resolves used to silently
+        // discard the first caller's callback (single-slot field).
+        private static readonly System.Collections.Generic.List<Action<LayersATTStatus>>
+            _pendingCallbacks = new System.Collections.Generic.List<Action<LayersATTStatus>>();
 
 #if UNITY_IOS && !UNITY_EDITOR
         [DllImport("__Internal")]
@@ -57,6 +68,9 @@ namespace Layers.Unity
 
         [DllImport("__Internal")]
         private static extern IntPtr layers_att_get_idfv();
+
+        [DllImport("__Internal")]
+        private static extern void layers_att_free_string(IntPtr ptr);
 #endif
 
         /// <summary>
@@ -95,8 +109,17 @@ namespace Layers.Unity
         public static void RequestTracking(Action<LayersATTStatus> callback)
         {
 #if UNITY_IOS && !UNITY_EDITOR
-            _pendingCallback = callback;
-            layers_att_request_tracking(OnNativeTrackingResult);
+            bool requestInFlight;
+            lock (_pendingCallbacks)
+            {
+                requestInFlight = _pendingCallbacks.Count > 0;
+                if (callback != null)
+                    _pendingCallbacks.Add(callback);
+            }
+            // Only one native request at a time — concurrent callers just
+            // join the pending list and are all answered by the one result.
+            if (!requestInFlight)
+                layers_att_request_tracking(NativeCallback);
 #else
             callback?.Invoke(LayersATTStatus.NotDetermined);
 #endif
@@ -114,7 +137,10 @@ namespace Layers.Unity
             if (ptr == IntPtr.Zero)
                 return null;
 
-            string idfa = Marshal.PtrToStringAnsi(ptr);
+            // Marshaling copies the string; the native strdup allocation
+            // must be freed explicitly (it used to leak on every call).
+            string idfa = Marshal.PtrToStringUTF8(ptr);
+            layers_att_free_string(ptr);
             // Native side returns empty string when not authorized or zeroed.
             if (string.IsNullOrEmpty(idfa))
                 return null;
@@ -137,7 +163,8 @@ namespace Layers.Unity
             if (ptr == IntPtr.Zero)
                 return null;
 
-            string idfv = Marshal.PtrToStringAnsi(ptr);
+            string idfv = Marshal.PtrToStringUTF8(ptr);
+            layers_att_free_string(ptr);
             if (string.IsNullOrEmpty(idfv))
                 return null;
 
@@ -162,9 +189,24 @@ namespace Layers.Unity
         private static void OnNativeTrackingResult(int status)
         {
             var attStatus = (LayersATTStatus)status;
-            var callback = _pendingCallback;
-            _pendingCallback = null;
-            callback?.Invoke(attStatus);
+            Action<LayersATTStatus>[] callbacks;
+            lock (_pendingCallbacks)
+            {
+                callbacks = _pendingCallbacks.ToArray();
+                _pendingCallbacks.Clear();
+            }
+            foreach (var callback in callbacks)
+            {
+                try
+                {
+                    callback?.Invoke(attStatus);
+                }
+                catch (Exception e)
+                {
+                    // One consumer's exception must not starve the others.
+                    UnityEngine.Debug.LogException(e);
+                }
+            }
         }
     }
 }

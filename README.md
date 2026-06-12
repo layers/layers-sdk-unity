@@ -1,6 +1,8 @@
 # Layers Analytics SDK for Unity
 
-Rust-powered analytics SDK for Unity — iOS, Android, and WebGL.
+Rust-powered analytics SDK for Unity — iOS and Android.
+
+> WebGL is not supported. For web games, integrate the `@layers/client` web SDK from the hosting page instead.
 
 ## Installation
 
@@ -292,6 +294,5 @@ This SDK uses a shared Rust core compiled to native libraries:
 
 - **iOS**: Static library (`.a`) linked via `__Internal` P/Invoke
 - **Android**: Shared library (`.so`) per ABI via P/Invoke
-- **WebGL**: WASM binary loaded via JavaScript bridge (`LayersWebGL.jslib`)
 
 The Rust core handles event queuing, serialization, persistence, retry, and batching. The C# wrapper provides Unity-specific integrations (lifecycle, coroutine-based networking, platform APIs).

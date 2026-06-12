@@ -37,7 +37,9 @@ namespace Layers.Unity
     {
         // ── Constants ────────────────────────────────────────────────────
 
-        internal const string SdkVersion = "3.1.1";
+        // Kept in sync with package.json by the release pipeline's version
+        // injection (release.yml) and verified by scripts/check-versions.
+        internal const string SdkVersion = "3.1.2";
 
         // ── State ────────────────────────────────────────────────────────
 
@@ -213,7 +215,26 @@ namespace Layers.Unity
                 configDict["base_url"] = config.BaseUrl;
 
             string configJson = JsonHelper.Serialize(configDict);
-            string error = _platform.Init(configJson);
+            string error;
+            try
+            {
+                error = _platform.Init(configJson);
+            }
+            catch (DllNotFoundException)
+            {
+                // No native layers_core library for this platform — the
+                // common case is Editor play mode without a desktop dylib.
+                // Never crash the host: report through OnError and abort
+                // initialization cleanly. (Use LayersTestMode.Enable() in
+                // tests, or build a desktop library for Editor play mode.)
+                RaiseError(
+                    "Initialize",
+                    "Native layers_core library not found for this platform. "
+                        + "In the Unity Editor this is expected unless a desktop build of "
+                        + "the Rust core is installed; the SDK is disabled for this session. "
+                        + "Use LayersTestMode.Enable() for play-mode testing without the native library.");
+                return;
+            }
             if (error != null)
             {
                 RaiseError("Initialize", error);
@@ -1404,6 +1425,12 @@ namespace Layers.Unity
             }
             DebugOverlay.ResetState();
 
+            // Unregister the before_send trampoline BEFORE the core shuts
+            // down: if the native library retains the registration across a
+            // shutdown/re-init (or an Editor domain reload kills the managed
+            // delegate), the next filtered event would invoke a dangling
+            // function pointer.
+            _platform?.ClearBeforeSend();
             _platform?.Shutdown();
 
             _isInitialized = false;
@@ -1603,7 +1630,11 @@ namespace Layers.Unity
         /// via the Rust core's DeviceContext. Values are persisted in PlayerPrefs
         /// so they survive app restarts.
         ///
-        /// Pass null for a parameter to leave that value unchanged.
+        /// Pass null for a parameter to leave that value unchanged. Pass an
+        /// empty string to clear a single value. (Attribution arrives from
+        /// asynchronous sources — deep links, the install referrer — that
+        /// each know only their own click IDs, so an unset parameter must
+        /// never clobber a value another source already stored.)
         ///
         /// <c>deeplink_id</c> and <c>gclid</c> flow through DeviceContext on the
         /// Rust core (top-level event fields), not the properties bag.
@@ -1624,56 +1655,57 @@ namespace Layers.Unity
         {
             if (!CheckInitialized("SetAttributionData")) return;
 
-            _deeplinkId = deeplinkId;
-
-            // Build DeviceContext update
+            // Contract (matches the doc): pass NULL to leave a value
+            // unchanged; pass an EMPTY STRING to clear it. The old code
+            // overwrote every field with its (null) argument and deleted the
+            // PlayerPrefs keys — so the asynchronous install-referrer
+            // callback could erase a click ID a deep link had just set (its
+            // `?? _fbclid` fallbacks existed to work around exactly that),
+            // and the Rust DeviceContext kept the stale value while the
+            // event-merge cache lost it.
             var ctx = new Dictionary<string, object>();
+
             if (deeplinkId != null)
-                ctx["deeplink_id"] = deeplinkId;
+            {
+                _deeplinkId = deeplinkId.Length == 0 ? null : deeplinkId;
+                ctx["deeplink_id"] = deeplinkId; // "" clears the Rust-side context
+                PersistOrClear(PrefDeeplinkId, _deeplinkId);
+            }
             if (gclid != null)
+            {
+                _gclid = gclid.Length == 0 ? null : gclid;
                 ctx["gclid"] = gclid;
-            _gclid = gclid;
-            _fbclid = fbclid;
-            _fbc = fbclid != null
-                ? $"fb.1.{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}.{fbclid}"
-                : null;
-            _ttclid = ttclid;
-            _msclkid = msclkid;
+                PersistOrClear(PrefGclid, _gclid);
+            }
             if (fbclid != null)
             {
+                _fbclid = fbclid.Length == 0 ? null : fbclid;
+                _fbc = _fbclid != null
+                    ? $"fb.1.{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}.{_fbclid}"
+                    : null;
                 ctx["fbclid"] = fbclid;
-                ctx["fbc"] = _fbc;
+                ctx["fbc"] = _fbc ?? "";
+                PersistOrClear(PrefFbclid, _fbclid);
+                PersistOrClear(PrefFbc, _fbc);
             }
             if (ttclid != null)
+            {
+                _ttclid = ttclid.Length == 0 ? null : ttclid;
                 ctx["ttclid"] = ttclid;
+                PersistOrClear(PrefTtclid, _ttclid);
+            }
             if (msclkid != null)
+            {
+                _msclkid = msclkid.Length == 0 ? null : msclkid;
                 ctx["msclkid"] = msclkid;
+                PersistOrClear(PrefMsclkid, _msclkid);
+            }
 
             if (ctx.Count > 0)
             {
                 _platform.SetDeviceContext(JsonHelper.Serialize(ctx));
+                PlayerPrefs.Save();
             }
-            else
-            {
-                // All params null — clear attribution from DeviceContext
-                ctx["deeplink_id"] = "";
-                ctx["gclid"] = "";
-                ctx["fbclid"] = "";
-                ctx["fbc"] = "";
-                ctx["ttclid"] = "";
-                ctx["msclkid"] = "";
-                _platform.SetDeviceContext(JsonHelper.Serialize(ctx));
-            }
-
-            // Persist to PlayerPrefs for restore across app restarts.
-            PersistOrClear(PrefDeeplinkId, deeplinkId);
-            PersistOrClear(PrefGclid, gclid);
-            PersistOrClear(PrefFbclid, fbclid);
-            PersistOrClear(PrefFbc, _fbc);
-            PersistOrClear(PrefTtclid, ttclid);
-            PersistOrClear(PrefMsclkid, msclkid);
-
-            PlayerPrefs.Save();
 
             LayersLogger.Log(
                 $"SetAttributionData(deeplinkId={deeplinkId ?? "null"}, gclid={gclid ?? "null"}, " +
@@ -1860,6 +1892,12 @@ namespace Layers.Unity
 #if UNITY_WEBGL && !UNITY_EDITOR
             _platform?.Flush();
 #else
+            // Make the queue (and any batch mid-HTTP-request) durable FIRST:
+            // coroutines freeze while suspended, so if the OS kills the app
+            // in the background the in-flight request and the in-memory
+            // queue would both be lost. Then still attempt a network flush —
+            // the OS often grants a moment before suspending.
+            _flushManager?.PersistPendingForSuspend();
             _flushManager?.FlushNow();
 #endif
         }
@@ -2266,7 +2304,7 @@ namespace Layers.Unity
                         }
                         catch (Exception e)
                         {
-                            LayersLogger.LogWarning($"SetAttributionData from install referrer failed: {e.Message}");
+                            LayersLogger.Warn($"SetAttributionData from install referrer failed: {e.Message}");
                         }
                     }
 

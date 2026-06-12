@@ -26,6 +26,18 @@ namespace Layers.Unity.Internal
         private bool _isFlushing;
         private Coroutine _periodicCoroutine;
 
+        // The batch currently handed to an in-flight UnityWebRequest. It has
+        // already been drained out of the Rust queue, so until the response
+        // arrives this string is the ONLY copy — PersistPendingForSuspend
+        // requeues it before the app suspends.
+        private string _inFlightBatch;
+
+        // Number of events PersistPendingForSuspend put back into the Rust
+        // queue from the in-flight batch. Used by the Drop verdict to pull
+        // exactly those events back out — a non-retryable rejection must
+        // discard the payload even when the suspend path requeued it first.
+        private int _suspendRequeuedCount;
+
         internal FlushManager(LayersRunner runner, uint batchSize = 20)
         {
             _runner = runner;
@@ -97,6 +109,37 @@ namespace Layers.Unity.Internal
                 LayersLogger.Warn($"Blocking flush failed: {error}");
         }
 
+        /// <summary>
+        /// Make queued events durable before the app is suspended.
+        ///
+        /// Unity freezes coroutines while suspended, so a batch that
+        /// <see cref="DrainAndSend"/> pulled out of the Rust queue and handed
+        /// to an in-flight <see cref="UnityWebRequest"/> exists only in C#
+        /// memory — if the OS kills the app in the background (routine on
+        /// mobile), that batch is lost. Requeue any in-flight batch back into
+        /// the Rust queue, then run the blocking persist. Worst case the
+        /// request also completed and the batch is delivered twice — the
+        /// server's event_id dedup absorbs that; losing it is unrecoverable.
+        /// </summary>
+        internal void PersistPendingForSuspend()
+        {
+            if (_inFlightBatch != null)
+            {
+                // layers_requeue_events returns the number of re-enqueued
+                // events on success — remember it so a later Drop verdict
+                // can discard exactly those events (they sit at the FRONT
+                // of the queue via requeue_front, and no other drain can
+                // run while _isFlushing is held).
+                string result = NativeStringHelper.ReadAndFree(
+                    NativeBindings.layers_requeue_events(_inFlightBatch));
+                int count;
+                _suspendRequeuedCount =
+                    result != null && int.TryParse(result, out count) ? count : 0;
+                _inFlightBatch = null;
+            }
+            FlushBlocking();
+        }
+
         private IEnumerator PeriodicFlushLoop(float intervalSec)
         {
             while (true)
@@ -109,7 +152,16 @@ namespace Layers.Unity.Internal
 
         /// <summary>
         /// Core drain loop: pull batches from Rust, POST each via UnityWebRequest,
-        /// requeue on failure and break.
+        /// and act on the core's verdict.
+        ///
+        /// Delivery policy lives in the Rust core
+        /// (adr/0001-rust-owned-delivery-policy.md): one pre-flight gate
+        /// (consent/DNT + Retry-After + circuit breaker via
+        /// <see cref="NativeBindings.layers_should_attempt_flush"/>), one HTTP
+        /// attempt per batch, one post-flight report
+        /// (<see cref="NativeBindings.layers_record_flush_result"/>) whose
+        /// verdict decides requeue vs drop. No wrapper-side retry loops or
+        /// backoff — the periodic timer retries, gated by the core.
         /// </summary>
         private IEnumerator DrainAndSend()
         {
@@ -118,9 +170,24 @@ namespace Layers.Unity.Internal
 
             try
             {
+                // Gate only when there's something to send: the gate may claim
+                // the circuit breaker's half-open probe slot, which an idle
+                // tick must not consume.
+                if (NativeBindings.layers_queue_depth() <= 0) yield break;
+                if (NativeBindings.layers_should_attempt_flush() == 0)
+                {
+                    LayersLogger.Log("Flush skipped — core delivery gate closed");
+                    yield break;
+                }
+
+                // After a passed gate, EVERY pre-wire abort path must call
+                // layers_abort_flush_attempt() — it releases a claimed
+                // half-open breaker probe WITHOUT counting a delivery
+                // failure (no request was made).
                 string url = NativeStringHelper.ReadAndFree(NativeBindings.layers_events_url());
                 if (string.IsNullOrEmpty(url))
                 {
+                    NativeBindings.layers_abort_flush_attempt();
                     LayersLogger.Warn("Flush skipped: no events URL available");
                     yield break;
                 }
@@ -129,11 +196,21 @@ namespace Layers.Unity.Internal
                     NativeBindings.layers_flush_headers_json());
                 var headers = ParseHeaders(headersJson);
 
+                // Tracks whether any outcome was reported this flush — if
+                // the queue raced empty after the gate passed, the claimed
+                // probe must still be released.
+                bool reportedOutcome = false;
+
                 while (true)
                 {
                     string batch = NativeStringHelper.ReadAndFree(
                         NativeBindings.layers_drain_batch(_batchSize));
-                    if (string.IsNullOrEmpty(batch)) break;
+                    if (string.IsNullOrEmpty(batch))
+                    {
+                        if (!reportedOutcome)
+                            NativeBindings.layers_abort_flush_attempt();
+                        break;
+                    }
 
                     byte[] bodyRaw = Encoding.UTF8.GetBytes(batch);
 
@@ -146,24 +223,70 @@ namespace Layers.Unity.Internal
                         foreach (var kv in headers)
                             request.SetRequestHeader(kv.Key, kv.Value);
 
+                        // Track the drained batch while the request is in
+                        // flight so PersistPendingForSuspend can requeue it
+                        // if the app is suspended mid-request.
+                        _inFlightBatch = batch;
                         yield return request.SendWebRequest();
+                        // If PersistPendingForSuspend ran while we were
+                        // yielded (app suspended mid-request), it already
+                        // requeued this batch and cleared the field — the
+                        // requeue branch below must not requeue it a second
+                        // time.
+                        bool requeuedBySuspend = _inFlightBatch == null;
+                        int suspendRequeuedCount = _suspendRequeuedCount;
+                        _suspendRequeuedCount = 0;
+                        _inFlightBatch = null;
 
-                        bool success =
-                            request.result == UnityWebRequest.Result.Success &&
-                            request.responseCode >= 200 &&
-                            request.responseCode < 300;
+                        // Report the outcome to the core; status 0 = no
+                        // response (network error / timeout).
+                        ushort status =
+                            request.responseCode >= 100 && request.responseCode <= ushort.MaxValue
+                                ? (ushort)request.responseCode
+                                : (ushort)0;
+                        string retryAfterHeader = request.GetResponseHeader("Retry-After");
+                        byte verdict = NativeBindings.layers_record_flush_result(
+                            status, retryAfterHeader);
+                        reportedOutcome = true;
 
-                        if (!success)
+                        if (verdict == 1) // Delivered
                         {
-                            // Requeue failed batch and stop draining — timer will retry
-                            NativeStringHelper.ProcessResult(
-                                NativeBindings.layers_requeue_events(batch));
-                            LayersLogger.Warn(
-                                $"Flush failed (HTTP {request.responseCode}): {request.error}");
-                            break;
+                            LayersLogger.Log($"Flushed batch ({bodyRaw.Length} bytes)");
+                            continue; // keep draining the backlog
                         }
 
-                        LayersLogger.Log($"Flushed batch ({bodyRaw.Length} bytes)");
+                        if (verdict == 3) // Drop — non-retryable rejection
+                        {
+                            // Identical bytes can't succeed later; retrying
+                            // would wedge the queue behind a poison batch.
+                            if (requeuedBySuspend && suspendRequeuedCount > 0)
+                            {
+                                // The suspend path put this exact batch back
+                                // at the FRONT of the Rust queue before the
+                                // verdict arrived — pull those events out and
+                                // discard them, or the poison batch would be
+                                // drained and POSTed again.
+                                string discarded = NativeStringHelper.ReadAndFree(
+                                    NativeBindings.layers_drain_batch(
+                                        (uint)suspendRequeuedCount));
+                                LayersLogger.Warn(
+                                    $"Discarded suspend-requeued poison batch ({(discarded == null ? 0 : suspendRequeuedCount)} events)");
+                            }
+                            LayersLogger.Warn(
+                                $"Batch dropped: HTTP {status} (non-retryable)");
+                            continue; // keep draining
+                        }
+
+                        // RetryLater — requeue; the periodic timer retries,
+                        // gated by the core's Retry-After guard and breaker.
+                        if (!requeuedBySuspend)
+                        {
+                            NativeStringHelper.ProcessResult(
+                                NativeBindings.layers_requeue_events(batch));
+                        }
+                        LayersLogger.Warn(
+                            $"Flush deferred (HTTP {status}): {request.error}");
+                        break;
                     }
                 }
             }

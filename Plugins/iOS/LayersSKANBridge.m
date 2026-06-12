@@ -28,17 +28,19 @@ bool layers_skan_is_supported(void) {
 }
 
 /// Get the highest SKAN version supported by this OS.
-/// Returns a strdup'd C string. Unity marshals and frees it.
+/// Returns a pointer to a STATIC string literal — never freed, never owned
+/// by the caller. (The old strdup'd return leaked on every call: P/Invoke
+/// marshaling copies the string but never frees the native allocation.)
 /// Possible values: "4.0", "3.0", "2.2", "2.1", "2.0", "unsupported"
 const char* layers_skan_get_version(void) {
 #if LAYERS_HAS_SKAN
-    if (@available(iOS 16.1, *)) { return strdup("4.0"); }
-    if (@available(iOS 15.4, *)) { return strdup("3.0"); }
-    if (@available(iOS 14.6, *)) { return strdup("2.2"); }
-    if (@available(iOS 14.5, *)) { return strdup("2.1"); }
-    if (@available(iOS 14.0, *)) { return strdup("2.0"); }
+    if (@available(iOS 16.1, *)) { return "4.0"; }
+    if (@available(iOS 15.4, *)) { return "3.0"; }
+    if (@available(iOS 14.6, *)) { return "2.2"; }
+    if (@available(iOS 14.5, *)) { return "2.1"; }
+    if (@available(iOS 14.0, *)) { return "2.0"; }
 #endif
-    return strdup("unsupported");
+    return "unsupported";
 }
 
 /// Register app for ad network attribution.

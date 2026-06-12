@@ -21,6 +21,11 @@ namespace Layers.Unity.Internal
         private static LayersRunner _instance;
         private NetworkReachability _lastReachability;
 
+        // Application.internetReachability is documented as non-trivial on
+        // mobile — poll it on an interval instead of every frame.
+        private const float ReachabilityPollIntervalSec = 1f;
+        private float _reachabilityPollTimer;
+
         // Tier 2: tracks whether we've already emitted an $app_open for the
         // current foreground session. Reset to false when entering background.
         private static bool _appOpenEmittedThisSession;
@@ -60,14 +65,19 @@ namespace Layers.Unity.Internal
 
         private void Update()
         {
-            var current = Application.internetReachability;
-            if (_lastReachability == NetworkReachability.NotReachable
-                && current != NetworkReachability.NotReachable)
+            _reachabilityPollTimer += Time.unscaledDeltaTime;
+            if (_reachabilityPollTimer >= ReachabilityPollIntervalSec)
             {
-                // Went from offline to online — flush queued events
-                LayersSDK.OnReconnected();
+                _reachabilityPollTimer = 0f;
+                var current = Application.internetReachability;
+                if (_lastReachability == NetworkReachability.NotReachable
+                    && current != NetworkReachability.NotReachable)
+                {
+                    // Went from offline to online — flush queued events
+                    LayersSDK.OnReconnected();
+                }
+                _lastReachability = current;
             }
-            _lastReachability = current;
 
             // Tier 5: drain background-thread exception queue on the main
             // thread. Cheap when empty (one ConcurrentQueue.IsEmpty check).

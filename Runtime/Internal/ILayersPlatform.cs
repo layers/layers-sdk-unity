@@ -4,11 +4,10 @@ using System.Collections.Generic;
 namespace Layers.Unity.Internal
 {
     /// <summary>
-    /// Platform abstraction for the Layers SDK. Separates native (iOS/Android/desktop)
-    /// from WebGL targets. Each implementation delegates to the appropriate bridge:
+    /// Platform abstraction for the Layers SDK.
     ///
     /// - <see cref="NativePlatform"/>: P/Invoke via <see cref="NativeBindings"/> → Rust FFI (C ABI)
-    /// - <see cref="WebGLPlatform"/>: [DllImport("__Internal")] via <see cref="WebGLBindings"/> → jslib → Rust WASM
+    /// - Mock implementations via <see cref="LayersTestMode"/> for tests
     ///
     /// The <see cref="LayersSDK"/> facade uses <see cref="LayersPlatformFactory.Create"/>
     /// to select the correct implementation at runtime.

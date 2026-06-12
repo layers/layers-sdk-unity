@@ -77,8 +77,20 @@ void layers_att_request_tracking(LayersATTCallback callback) {
     }
 }
 
+/// Free a C string previously returned by layers_att_get_idfa /
+/// layers_att_get_idfv. P/Invoke marshaling COPIES the string into managed
+/// memory — it never frees the native allocation, so the C# side must call
+/// this after reading (the old "Unity marshals and frees it" comment was
+/// wrong and every call leaked).
+void layers_att_free_string(char* ptr) {
+    if (ptr) {
+        free(ptr);
+    }
+}
+
 /// Get the IDFA (advertising identifier).
-/// Returns a strdup'd C string. Unity marshals and frees it.
+/// Returns a strdup'd C string — caller must release it via
+/// layers_att_free_string after reading.
 /// Returns empty string if ATT is not authorized or IDFA is zeroed out.
 const char* layers_att_get_idfa(void) {
 #if LAYERS_HAS_ATT && LAYERS_HAS_ADSUPPORT
@@ -100,7 +112,8 @@ const char* layers_att_get_idfa(void) {
 
 /// Get the IDFV (vendor identifier).
 /// Always available on iOS, does not require ATT authorization.
-/// Returns a strdup'd C string. Unity marshals and frees it.
+/// Returns a strdup'd C string — caller must release it via
+/// layers_att_free_string after reading.
 const char* layers_att_get_idfv(void) {
     NSUUID *idfv = UIDevice.currentDevice.identifierForVendor;
     if (idfv) {

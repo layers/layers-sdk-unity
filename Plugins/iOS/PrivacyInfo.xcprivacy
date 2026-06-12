@@ -2,6 +2,19 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+    <!--
+      Layers Unity SDK Privacy Manifest (iOS)
+
+      Audited 2026-06-10 (audit M3 — per-datatype accuracy pass). Keep in
+      sync with swift/Sources/Layers/PrivacyInfo.xcprivacy: the same Rust
+      core backs both, so the data types and required-reason APIs match,
+      plus Unity-specific items noted inline.
+
+      NSPrivacyTracking is false today: the SDK does not send data to an
+      ATT-defined tracking endpoint. Flipping it to true (with a dedicated
+      tracking domain, e.g. tr.layers.com, in NSPrivacyTrackingDomains) is
+      a pending product decision blocked on infra — see the audit record.
+    -->
     <key>NSPrivacyTracking</key>
     <false/>
     <key>NSPrivacyTrackingDomains</key>
@@ -32,15 +45,67 @@
                 <string>NSPrivacyCollectedDataTypePurposeAnalytics</string>
             </array>
         </dict>
+        <!-- Commerce helpers send purchase/subscription events (revenue,
+             product_id) — see Runtime/Commerce.cs. -->
+        <dict>
+            <key>NSPrivacyCollectedDataType</key>
+            <string>NSPrivacyCollectedDataTypePurchaseHistory</string>
+            <key>NSPrivacyCollectedDataTypeLinked</key>
+            <false/>
+            <key>NSPrivacyCollectedDataTypeTracking</key>
+            <false/>
+            <key>NSPrivacyCollectedDataTypePurposes</key>
+            <array>
+                <string>NSPrivacyCollectedDataTypePurposeAnalytics</string>
+            </array>
+        </dict>
+        <!-- Exception capture ($exception events) —
+             see Runtime/ExceptionModule.cs. -->
+        <dict>
+            <key>NSPrivacyCollectedDataType</key>
+            <string>NSPrivacyCollectedDataTypeCrashData</string>
+            <key>NSPrivacyCollectedDataTypeLinked</key>
+            <false/>
+            <key>NSPrivacyCollectedDataTypeTracking</key>
+            <false/>
+            <key>NSPrivacyCollectedDataTypePurposes</key>
+            <array>
+                <string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+            </array>
+        </dict>
     </array>
     <key>NSPrivacyAccessedAPITypes</key>
     <array>
+        <!-- PlayerPrefs (= NSUserDefaults on iOS) stores small flags
+             (first_open gate, install id fallback). -->
         <dict>
             <key>NSPrivacyAccessedAPIType</key>
             <string>NSPrivacyAccessedAPICategoryUserDefaults</string>
             <key>NSPrivacyAccessedAPITypeReasons</key>
             <array>
                 <string>CA92.1</string>
+            </array>
+        </dict>
+        <!-- Rust persistence layer (core/src/persistence.rs) reads file
+             metadata for hydration; writes are .tmp + rename inside the
+             app container. -->
+        <dict>
+            <key>NSPrivacyAccessedAPIType</key>
+            <string>NSPrivacyAccessedAPICategoryFileTimestamp</string>
+            <key>NSPrivacyAccessedAPITypeReasons</key>
+            <array>
+                <string>C617.1</string>
+            </array>
+        </dict>
+        <!-- Rust core Instant (std::time) reads system boot time to
+             measure in-app elapsed durations (timed events, breaker
+             reset, Retry-After gate). -->
+        <dict>
+            <key>NSPrivacyAccessedAPIType</key>
+            <string>NSPrivacyAccessedAPICategorySystemBootTime</string>
+            <key>NSPrivacyAccessedAPITypeReasons</key>
+            <array>
+                <string>35F9.1</string>
             </array>
         </dict>
     </array>

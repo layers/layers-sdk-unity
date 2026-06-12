@@ -1,14 +1,11 @@
 namespace Layers.Unity.Internal
 {
     /// <summary>
-    /// Factory that selects the correct <see cref="ILayersPlatform"/> implementation
-    /// based on the build target:
+    /// Factory that selects the <see cref="ILayersPlatform"/> implementation.
     ///
-    /// - WebGL: <see cref="WebGLPlatform"/> (jslib → Rust WASM)
-    /// - Everything else: <see cref="NativePlatform"/> (P/Invoke → Rust native lib)
-    ///
-    /// Platform selection is compile-time via #if directives, so no runtime
-    /// overhead or reflection is involved.
+    /// All supported targets (iOS, Android, desktop/Editor) use
+    /// <see cref="NativePlatform"/> (P/Invoke → Rust native lib). WebGL is
+    /// not supported — see Runtime/Internal/WebGLUnsupported.cs.
     /// </summary>
     internal static class LayersPlatformFactory
     {
@@ -21,11 +18,7 @@ namespace Layers.Unity.Internal
                 if (mock != null) return mock;
             }
 
-#if UNITY_WEBGL && !UNITY_EDITOR
-            return new WebGLPlatform();
-#else
             return new NativePlatform();
-#endif
         }
     }
 }

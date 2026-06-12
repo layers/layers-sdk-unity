@@ -81,7 +81,8 @@ namespace Layers.Unity
             if (ptr == IntPtr.Zero)
                 return "unsupported";
 
-            string version = Marshal.PtrToStringAnsi(ptr);
+            // The bridge returns a static literal — read-only, never freed.
+            string version = Marshal.PtrToStringUTF8(ptr);
             return string.IsNullOrEmpty(version) ? "unsupported" : version;
 #else
             return "unsupported";
