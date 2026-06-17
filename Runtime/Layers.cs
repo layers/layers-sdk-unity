@@ -39,7 +39,7 @@ namespace Layers.Unity
 
         // Kept in sync with package.json by the release pipeline's version
         // injection (release.yml) and verified by scripts/check-versions.
-        internal const string SdkVersion = "3.1.2";
+        internal const string SdkVersion = "3.1.3";
 
         // ── State ────────────────────────────────────────────────────────
 
