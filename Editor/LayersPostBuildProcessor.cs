@@ -67,6 +67,9 @@ namespace Layers.Unity.Editor
             // 2. SKAdNetwork IDs (idempotent — deduplicates against existing entries)
             AddSKAdNetworkIds(root, settings);
 
+            // 2b. SKAdNetwork postback endpoint — the on-switch for postback delivery.
+            AddAdvertisingAttributionReportEndpoint(root, settings);
+
             // 3. URL schemes for deep linking (idempotent — merges into existing entry)
             AddUrlSchemes(root, settings);
 
@@ -140,6 +143,43 @@ namespace Layers.Unity.Editor
                 var dict = skanArray.AddDict();
                 dict.SetString("SKAdNetworkIdentifier", id);
             }
+        }
+
+        /// <summary>
+        /// Set NSAdvertisingAttributionReportEndpoint so Apple copies SKAdNetwork
+        /// postbacks to Layers — it POSTs them to
+        /// {endpoint}/.well-known/skadnetwork/report. Without this key, Apple never
+        /// delivers postbacks to us. Apple permits exactly one endpoint, so if a value
+        /// is already present (e.g. set by another MMP plugin) we leave it untouched.
+        /// </summary>
+        private static void AddAdvertisingAttributionReportEndpoint(
+            PlistElementDict root, LayersSettings settings)
+        {
+            if (!settings.setAdvertisingAttributionReportEndpoint)
+                return;
+
+            string endpoint = settings.advertisingAttributionReportEndpoint;
+            if (string.IsNullOrWhiteSpace(endpoint) || !endpoint.StartsWith("https://"))
+            {
+                Debug.LogWarning(
+                    $"[Layers] NSAdvertisingAttributionReportEndpoint \"{endpoint}\" " +
+                    "must be an https URL. Skipping.");
+                return;
+            }
+
+            var existing = root["NSAdvertisingAttributionReportEndpoint"];
+            if (existing != null && existing.AsString() != endpoint
+                && !settings.forceAttributionEndpointOverride)
+            {
+                Debug.LogWarning(
+                    "[Layers] NSAdvertisingAttributionReportEndpoint already set to " +
+                    $"\"{existing.AsString()}\". Leaving it unchanged so we don't override " +
+                    "another attribution provider (Apple allows exactly one). Enable " +
+                    "LayersSettings.forceAttributionEndpointOverride to override it.");
+                return;
+            }
+
+            root.SetString("NSAdvertisingAttributionReportEndpoint", endpoint);
         }
 
         /// <summary>

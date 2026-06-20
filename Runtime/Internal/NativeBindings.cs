@@ -233,6 +233,48 @@ namespace Layers.Unity.Internal
             [MarshalAs(UnmanagedType.LPUTF8Str)] string config_json,
             [MarshalAs(UnmanagedType.LPUTF8Str)] string etag);
 
+        // ── SKAN (SKAdNetwork) — the Rust core owns rule evaluation, presets, and
+        // the monotonic floor. The wrapper bridges to native StoreKit separately. ──
+
+        /// <summary>Apply the `skan` block from the cached remote config. Returns
+        /// null on success or an error string (e.g. unknown preset). MUST free.</summary>
+        [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern IntPtr layers_skan_configure_from_remote_config();
+
+        /// <summary>Load a built-in SKAN preset. Returns null/error. MUST free.</summary>
+        [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern IntPtr layers_skan_set_preset(
+            [MarshalAs(UnmanagedType.LPUTF8Str)] string preset);
+
+        /// <summary>Replace the active SKAN rules with a JSON array. MUST free.</summary>
+        [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern IntPtr layers_skan_set_rules(
+            [MarshalAs(UnmanagedType.LPUTF8Str)] string rules_json);
+
+        /// <summary>Evaluate an event. Returns a JSON decision
+        /// {"fineValue":N,"coarseValue":"...","lockWindow":bool} or null. MUST free.</summary>
+        [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern IntPtr layers_skan_process_event(
+            [MarshalAs(UnmanagedType.LPUTF8Str)] string event_name,
+            [MarshalAs(UnmanagedType.LPUTF8Str)] string properties_json);
+
+        /// <summary>Report the outcome of applying a SKAN update. MUST free.</summary>
+        [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern IntPtr layers_skan_record_conversion_result(
+            byte value, [MarshalAs(UnmanagedType.I1)] bool success);
+
+        /// <summary>The highest SKAN conversion value posted so far, or -1.</summary>
+        [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int layers_skan_current_value();
+
+        /// <summary>1 if SKAN is currently enabled, 0 otherwise.</summary>
+        [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern byte layers_skan_is_enabled();
+
+        /// <summary>The active SKAN preset name, or null. MUST free.</summary>
+        [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern IntPtr layers_skan_current_preset();
+
         // ── Tier 1: Super-properties ───────────────────────────────────
 
         /// <summary>

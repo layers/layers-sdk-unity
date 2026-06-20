@@ -18,11 +18,20 @@ namespace Layers.Unity.Editor
             "This app uses data for personalized ads and to measure ad performance.";
 
         [Header("iOS — SKAdNetwork")]
-        [Tooltip("Include the default set of 16 SKAdNetwork IDs (Meta, Google, TikTok, Snapchat, X, Unity Ads, AppLovin, IronSource).")]
+        [Tooltip("Include the default set of 23 SKAdNetwork IDs (Meta, Google, TikTok, Snapchat, X, Unity Ads, AppLovin, IronSource, Mintegral, Vungle/Liftoff, Moloco, Pangle, Chartboost, Digital Turbine/Fyber, InMobi).")]
         public bool includeDefaultSKAdNetworkIds = true;
 
         [Tooltip("Additional SKAdNetwork identifiers to register beyond the defaults. Each must end with .skadnetwork.")]
         public string[] additionalSKAdNetworkIds;
+
+        [Tooltip("Set NSAdvertisingAttributionReportEndpoint so Apple delivers SKAdNetwork postbacks to Layers. Disable only if another MMP already owns the postback endpoint (Apple allows exactly one).")]
+        public bool setAdvertisingAttributionReportEndpoint = true;
+
+        [Tooltip("The SKAdNetwork postback endpoint Apple copies postbacks to. Apple appends /.well-known/skadnetwork/report. Must be an https URL.")]
+        public string advertisingAttributionReportEndpoint = "https://layers.click";
+
+        [Tooltip("Overwrite an existing NSAdvertisingAttributionReportEndpoint (e.g. set by another MMP/plugin) with the Layers endpoint above. Apple allows exactly one endpoint, so only one provider can receive postbacks. Off by default (don't clobber other providers).")]
+        public bool forceAttributionEndpointOverride = false;
 
         [Header("iOS — Deep Linking")]
         [Tooltip("Custom URL schemes for deep linking (e.g., myapp). Do not include '://'.")]
@@ -58,9 +67,10 @@ namespace Layers.Unity.Editor
         // ── Default SKAN IDs ────────────────────────────────────────────
 
         /// <summary>
-        /// The 16 default SKAdNetwork identifiers shared across all Layers SDKs
+        /// The 23 default SKAdNetwork identifiers shared across all Layers SDKs
         /// (Expo, Swift, React Native, Unity). Covers Meta, Google, TikTok,
-        /// Snapchat, X, Unity Ads, AppLovin, and IronSource.
+        /// Snapchat, X, Unity Ads, AppLovin, IronSource, Mintegral, Vungle/Liftoff,
+        /// Moloco, Pangle, Chartboost, Digital Turbine/Fyber, and InMobi.
         /// </summary>
         public static readonly string[] DefaultSKAdNetworkIds =
         {
@@ -87,7 +97,21 @@ namespace Layers.Unity.Editor
             // IronSource
             "su67r6k2v3.skadnetwork",
             "578prtvx9j.skadnetwork",
-            "4dzt52r2t5.skadnetwork"
+            "4dzt52r2t5.skadnetwork",
+            // Mintegral
+            "kbmxgpxpgc.skadnetwork",
+            // Vungle / Liftoff Monetize
+            "gta9lk7p23.skadnetwork",
+            // Moloco
+            "2u9pt9hc89.skadnetwork",
+            // Pangle (ByteDance; non-CN shares TikTok's 22mmun2rn5 above)
+            "238da6jt44.skadnetwork",
+            // Chartboost
+            "f38h382jlk.skadnetwork",
+            // Digital Turbine / Fyber
+            "m8dbw4sv7c.skadnetwork",
+            // InMobi
+            "wzmmz9fp6w.skadnetwork"
         };
     }
 

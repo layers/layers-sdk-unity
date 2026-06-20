@@ -2,12 +2,14 @@
 // Layers Unity SDK
 //
 // C# wrapper for SKAdNetwork (SKAN) on iOS.
-// Delegates to native Objective-C bridge via P/Invoke.
-// On non-iOS platforms, all methods are safe no-ops.
 //
-// SKAN auto-config: reads the "skan" section from remote config to automatically
-// configure presets or custom conversion value rules, matching the Swift and
-// React Native SDK behavior.
+// The Rust core (core/src/skan.rs) is the single source of truth for rule
+// evaluation, presets, the monotonic conversion floor, and persistence. This
+// module bridges to the native Objective-C StoreKit APIs (which the core cannot
+// call) and reports the native apply outcome back to the core. There is no
+// parallel C# rule engine.
+//
+// On non-iOS platforms (Android, Editor), all methods are safe no-ops.
 
 using System;
 using System.Collections.Generic;
@@ -36,6 +38,7 @@ namespace Layers.Unity
     public static class SKANModule
     {
 #if UNITY_IOS && !UNITY_EDITOR
+        // Objective-C StoreKit bridge (Plugins/iOS/LayersSKANBridge.m).
         [DllImport("__Internal")]
         private static extern bool layers_skan_is_supported();
 
@@ -171,7 +174,7 @@ namespace Layers.Unity
             }
         }
 
-        // ── SKAN Auto-Config & Rule Engine ──────────────────────────────
+        // ── SKAN Auto-Config & Rule Engine (delegated to the Rust core) ─────────
 
         /// <summary>
         /// A conversion value rule that maps events (with optional conditions)
@@ -192,500 +195,243 @@ namespace Layers.Unity
             public Dictionary<string, object> Conditions;
         }
 
-        /// <summary>The active conversion rules, sorted by priority (highest first).</summary>
-        private static List<SKANConversionRule> _rules = new List<SKANConversionRule>();
-
-        /// <summary>The current fine conversion value reported to SKAN.</summary>
-        private static int _currentValue;
-
-        /// <summary>Name of the active preset, or null if none / custom rules.</summary>
-        private static string _currentPreset;
-
-        /// <summary>Whether auto-config has been applied at least once.</summary>
-        private static bool _autoConfigured;
+        /// <summary>Whether Apple's postback window has been armed this launch.
+        /// One-shot: re-registering would reset the OS conversion value.</summary>
+        private static bool _skanArmed;
 
         /// <summary>
-        /// The current fine conversion value tracked by the rule engine.
+        /// The highest fine conversion value posted so far (the Rust core's
+        /// install-scoped monotonic floor).
         /// </summary>
-        public static int CurrentValue => _currentValue;
+        public static int CurrentValue
+        {
+            get
+            {
+#if UNITY_IOS && !UNITY_EDITOR
+                int v = NativeBindings.layers_skan_current_value();
+                return v < 0 ? 0 : v;
+#else
+                return 0;
+#endif
+            }
+        }
 
         /// <summary>
         /// The name of the currently active preset ("subscriptions", "engagement",
         /// "iap", "custom"), or null if no rules are configured.
         /// </summary>
-        public static string CurrentPreset => _currentPreset;
+        public static string CurrentPreset
+        {
+            get
+            {
+#if UNITY_IOS && !UNITY_EDITOR
+                return NativeStringHelper.ReadAndFree(NativeBindings.layers_skan_current_preset());
+#else
+                return null;
+#endif
+            }
+        }
 
         /// <summary>
-        /// Whether SKAN auto-config from remote config has been applied.
+        /// Whether SKAN is enabled (a non-disabled skan config applied). Gates
+        /// whether tracked events are forwarded to the SKAN engine.
         /// </summary>
-        public static bool IsAutoConfigured => _autoConfigured;
+        public static bool IsAutoConfigured
+        {
+            get
+            {
+#if UNITY_IOS && !UNITY_EDITOR
+                return NativeBindings.layers_skan_is_enabled() != 0;
+#else
+                return false;
+#endif
+            }
+        }
 
         /// <summary>
-        /// Apply a named preset, replacing any existing rules.
+        /// Apply a named preset in the Rust core, replacing any existing rules.
         /// Presets match the React Native and Swift SDK presets.
         /// </summary>
-        /// <param name="preset">One of "subscriptions", "engagement", "iap".</param>
+        /// <param name="preset">One of "subscriptions", "engagement", "iap"
+        /// (case-insensitive; "ecommerce" aliases "iap").</param>
         public static void SetPreset(string preset)
         {
-            var rules = GetPresetRules(preset);
-            if (rules == null || rules.Count == 0)
+#if UNITY_IOS && !UNITY_EDITOR
+            string err = NativeStringHelper.ReadAndFree(
+                NativeBindings.layers_skan_set_preset(preset));
+            if (!string.IsNullOrEmpty(err))
             {
-                LayersLogger.Warn($"SKAN: unknown preset '{preset}'");
-                return;
+                LayersLogger.Warn($"SKAN setPreset failed: {err}");
             }
-            _rules = rules;
-            _currentPreset = preset;
-            SortRules();
+#endif
         }
 
         /// <summary>
-        /// Set custom conversion value rules, replacing any existing rules.
+        /// Replace the active conversion rules in the Rust core with a custom set.
         /// </summary>
-        /// <param name="rules">The list of conversion rules.</param>
         public static void SetCustomRules(List<SKANConversionRule> rules)
         {
-            _rules = rules ?? new List<SKANConversionRule>();
-            _currentPreset = "custom";
-            SortRules();
+#if UNITY_IOS && !UNITY_EDITOR
+            string json = SerializeRules(rules);
+            string err = NativeStringHelper.ReadAndFree(
+                NativeBindings.layers_skan_set_rules(json));
+            if (!string.IsNullOrEmpty(err))
+            {
+                LayersLogger.Warn($"SKAN setCustomRules failed: {err}");
+            }
+#endif
         }
 
         /// <summary>
-        /// Process a tracked event against the active rules. If a matching rule has
-        /// a higher conversion value than the current value, SKAN is updated.
-        /// Conversion values only increase (never decrease), matching SKAN semantics.
-        ///
-        /// Call this after every <see cref="LayersSDK.Track"/> call when SKAN rules are
-        /// active. The SDK wires this up automatically when auto-config is enabled.
+        /// Forward an event to the Rust core's SKAN engine. If the core returns an
+        /// update, apply it via StoreKit and report the outcome so the core commits
+        /// its monotonic floor only on success (a failed apply is re-issued on the
+        /// next event). Call after every Track/Screen when <see cref="IsAutoConfigured"/>.
         /// </summary>
-        /// <param name="eventName">The event name.</param>
-        /// <param name="properties">The event properties, or null.</param>
         public static void ProcessEvent(string eventName, Dictionary<string, object> properties)
         {
-            if (_rules == null || _rules.Count == 0) return;
-
-            var props = properties ?? new Dictionary<string, object>();
-
-            foreach (var rule in _rules)
+#if UNITY_IOS && !UNITY_EDITOR
+            string propsJson = JsonHelper.Serialize(properties ?? new Dictionary<string, object>());
+            string decisionJson = NativeStringHelper.ReadAndFree(
+                NativeBindings.layers_skan_process_event(eventName, propsJson));
+            if (string.IsNullOrEmpty(decisionJson))
             {
-                if (EvaluateRule(rule, eventName, props))
-                {
-                    // Only update if the new value is strictly higher (SKAN semantics)
-                    if (rule.ConversionValue > _currentValue)
-                    {
-                        int previousValue = _currentValue;
-                        _currentValue = rule.ConversionValue;
-
-                        if (rule.CoarseValue.HasValue)
-                        {
-                            UpdatePostbackConversionValue(
-                                rule.ConversionValue, rule.CoarseValue.Value, rule.LockWindow);
-                        }
-                        else
-                        {
-                            UpdateConversionValue(rule.ConversionValue);
-                        }
-
-                        LayersLogger.Log(
-                            $"SKAN conversion value updated: {previousValue} -> {rule.ConversionValue} (event: {eventName})");
-                    }
-
-                    // First match (highest priority) wins
-                    break;
-                }
+                return;
             }
-        }
 
-        /// <summary>
-        /// Configure SKAN from the remote config JSON. Reads the "skan" section
-        /// and applies either a preset or custom rules. Auto-registers for
-        /// attribution if rules are configured.
-        ///
-        /// This is called automatically when the remote config is fetched.
-        /// The expected JSON structure mirrors the Swift and React Native SDKs:
-        /// <code>
-        /// {
-        ///   "skan": {
-        ///     "enabled": true,
-        ///     "preset": "subscriptions",        // OR
-        ///     "customRules": [
-        ///       {
-        ///         "eventName": "purchase",
-        ///         "conversionValue": 10,
-        ///         "priority": 5,
-        ///         "conditions": { "revenue": { ">=": 10 } },
-        ///         "coarseValue": "high",
-        ///         "lockWindow": true
-        ///       }
-        ///     ]
-        ///   }
-        /// }
-        /// </code>
-        /// </summary>
-        /// <param name="configJson">The full remote config JSON string.</param>
-        public static void ConfigureFromRemoteConfig(string configJson)
-        {
-            if (string.IsNullOrEmpty(configJson)) return;
+            if (!TryParseDecision(decisionJson, out int fineValue, out string coarse, out bool lockWindow))
+            {
+                return;
+            }
 
-            Dictionary<string, object> config;
+            // Apply via StoreKit, then report the outcome so the core advances its
+            // floor only on success. A synchronous bridge failure rolls back via
+            // record(success: false); the void bridge doesn't surface async failures.
+            bool applied = true;
             try
             {
-                config = JsonHelper.Deserialize(configJson);
+                if (!string.IsNullOrEmpty(coarse))
+                {
+                    layers_skan_update_postback(fineValue, coarse, lockWindow);
+                }
+                else
+                {
+                    layers_skan_update_conversion_value(fineValue);
+                }
             }
             catch (Exception e)
             {
-                LayersLogger.Warn($"SKAN auto-config: failed to parse config JSON: {e.Message}");
-                return;
+                applied = false;
+                LayersLogger.Warn($"SKAN native update failed: {e.Message}");
             }
 
-            if (config == null) return;
-
-            // Extract the "skan" section
-            if (!config.ContainsKey("skan")) return;
-            var skanObj = config["skan"] as Dictionary<string, object>;
-            if (skanObj == null) return;
-
-            // Respect explicit "enabled": false
-            if (skanObj.ContainsKey("enabled"))
-            {
-                var enabled = skanObj["enabled"];
-                if (enabled is bool b && !b) return;
-                if (enabled is double d && d == 0) return;
-            }
-
-            // Option 1: preset name
-            if (skanObj.ContainsKey("preset") && skanObj["preset"] is string preset)
-            {
-                string presetLower = preset.ToLowerInvariant();
-                // Map "ecommerce" to "iap" to match Swift SDK behavior
-                if (presetLower == "ecommerce") presetLower = "iap";
-
-                var presetRules = GetPresetRules(presetLower);
-                if (presetRules != null && presetRules.Count > 0)
-                {
-                    _rules = presetRules;
-                    _currentPreset = presetLower;
-                    SortRules();
-                    Register();
-                    _autoConfigured = true;
-                    LayersLogger.Log($"SKAN auto-configured from remote config: preset={presetLower}");
-                }
-                else
-                {
-                    LayersLogger.Warn($"SKAN auto-config: unknown preset '{preset}'");
-                }
-                return;
-            }
-
-            // Option 2: custom rules array
-            if (skanObj.ContainsKey("customRules") && skanObj["customRules"] is List<object> rulesArray)
-            {
-                var parsedRules = ParseCustomRules(rulesArray);
-                if (parsedRules.Count > 0)
-                {
-                    _rules = parsedRules;
-                    _currentPreset = "custom";
-                    SortRules();
-                    Register();
-                    _autoConfigured = true;
-                    LayersLogger.Log(
-                        $"SKAN auto-configured from remote config: {parsedRules.Count} custom rules");
-                }
-            }
+            NativeStringHelper.ReadAndFree(
+                NativeBindings.layers_skan_record_conversion_result(
+                    (byte)Math.Clamp(fineValue, 0, 63), applied));
+#endif
         }
 
         /// <summary>
-        /// Reset the SKAN rule engine state. Primarily useful for testing.
+        /// Configure SKAN from the cached remote config. The Rust core already holds
+        /// the config (fed via layers_update_remote_config) and owns all parsing
+        /// (preset / rules / ecommerce alias / unknown-preset clearing / disable).
+        /// Arms Apple's window once if SKAN is enabled. The <paramref name="configJson"/>
+        /// argument is accepted for back-compat but ignored — the core reads its own.
         /// </summary>
+        public static void ConfigureFromRemoteConfig(string configJson)
+        {
+#if UNITY_IOS && !UNITY_EDITOR
+            // A non-null error (e.g. unknown preset → rules cleared) is non-fatal.
+            NativeStringHelper.ReadAndFree(
+                NativeBindings.layers_skan_configure_from_remote_config());
+
+            if (NativeBindings.layers_skan_is_enabled() != 0)
+            {
+                ArmOnce();
+            }
+#endif
+        }
+
+        /// <summary>Reset SKAN arming state. Primarily for testing / shutdown.</summary>
         internal static void ResetAutoConfig()
         {
-            _rules = new List<SKANConversionRule>();
-            _currentValue = 0;
-            _currentPreset = null;
-            _autoConfigured = false;
+            _skanArmed = false;
         }
 
-        // ── Private: Rule Evaluation ────────────────────────────────────
-
-        private static bool EvaluateRule(
-            SKANConversionRule rule, string eventName, Dictionary<string, object> properties)
+        /// <summary>Arm Apple's postback window exactly once per launch (re-arming
+        /// would reset the OS conversion value mid-session).</summary>
+        private static void ArmOnce()
         {
-            if (rule.EventName != eventName) return false;
-            if (rule.Conditions == null || rule.Conditions.Count == 0) return true;
-
-            foreach (var kvp in rule.Conditions)
+            if (_skanArmed)
             {
-                string key = kvp.Key;
-                object expected = kvp.Value;
+                return;
+            }
+            _skanArmed = true;
+            Register();
+        }
 
-                object actual = properties.ContainsKey(key) ? properties[key] : null;
+        // --- JSON helpers (bridge between C# rule structs and the core's wire format) ---
 
-                if (expected is Dictionary<string, object> operators)
+        private static string SerializeRules(List<SKANConversionRule> rules)
+        {
+            var list = new List<object>();
+            if (rules != null)
+            {
+                foreach (var r in rules)
                 {
-                    // Operator-based condition: { ">": 10, "<": 100 }
-                    foreach (var op in operators)
+                    var map = new Dictionary<string, object>
                     {
-                        if (!EvaluateOperator(actual, op.Key, op.Value))
-                            return false;
+                        ["eventName"] = r.EventName,
+                        ["conversionValue"] = r.ConversionValue,
+                        ["priority"] = r.Priority,
+                        ["lockWindow"] = r.LockWindow,
+                    };
+                    if (r.CoarseValue.HasValue)
+                    {
+                        map["coarseValue"] = CoarseValueToString(r.CoarseValue.Value);
                     }
-                }
-                else
-                {
-                    // Direct equality check
-                    if (!ValuesEqual(actual, expected))
-                        return false;
+                    if (r.Conditions != null)
+                    {
+                        map["conditions"] = r.Conditions;
+                    }
+                    list.Add(map);
                 }
             }
-
-            return true;
+            return JsonHelper.SerializeAny(list);
         }
 
-        private static bool EvaluateOperator(object actual, string op, object expected)
+        private static bool TryParseDecision(
+            string json, out int fineValue, out string coarse, out bool lockWindow)
         {
-            double a = ToDouble(actual);
-            double b = ToDouble(expected);
-
-            switch (op)
+            fineValue = 0;
+            coarse = null;
+            lockWindow = false;
+            try
             {
-                case ">": return a > b;
-                case ">=": return a >= b;
-                case "<": return a < b;
-                case "<=": return a <= b;
-                case "==":
-                case "=": return ValuesEqual(actual, expected);
-                case "!=": return !ValuesEqual(actual, expected);
-                default: return false;
+                var map = JsonHelper.Deserialize(json);
+                if (map == null)
+                {
+                    return false;
+                }
+                if (map.TryGetValue("fineValue", out object fv) && fv != null)
+                {
+                    fineValue = Convert.ToInt32(fv, CultureInfo.InvariantCulture);
+                }
+                if (map.TryGetValue("coarseValue", out object cv))
+                {
+                    coarse = cv as string;
+                }
+                if (map.TryGetValue("lockWindow", out object lw) && lw is bool b)
+                {
+                    lockWindow = b;
+                }
+                return true;
             }
-        }
-
-        private static double ToDouble(object value)
-        {
-            if (value == null) return 0;
-            if (value is double d) return d;
-            if (value is int i) return i;
-            if (value is long l) return l;
-            if (value is float f) return f;
-            if (value is string s && double.TryParse(
-                    s, NumberStyles.Float, CultureInfo.InvariantCulture, out double parsed))
-                return parsed;
-            return 0;
-        }
-
-        private static bool ValuesEqual(object a, object b)
-        {
-            if (a == null && b == null) return true;
-            if (a == null || b == null) return false;
-
-            // Compare numerically if both are numeric types
-            if (IsNumeric(a) && IsNumeric(b))
-                return Math.Abs(ToDouble(a) - ToDouble(b)) < 0.0001;
-
-            return string.Equals(a.ToString(), b.ToString(), StringComparison.Ordinal);
-        }
-
-        private static bool IsNumeric(object value)
-        {
-            return value is double || value is int || value is long || value is float;
-        }
-
-        private static void SortRules()
-        {
-            _rules.Sort((a, b) => b.Priority.CompareTo(a.Priority));
-        }
-
-        // ── Private: Custom Rules Parsing ───────────────────────────────
-
-        private static List<SKANConversionRule> ParseCustomRules(List<object> rulesArray)
-        {
-            var result = new List<SKANConversionRule>();
-
-            foreach (var item in rulesArray)
+            catch (Exception e)
             {
-                if (!(item is Dictionary<string, object> ruleDict)) continue;
-
-                if (!ruleDict.ContainsKey("eventName") || !(ruleDict["eventName"] is string eventName))
-                    continue;
-
-                int conversionValue = 0;
-                if (ruleDict.ContainsKey("conversionValue"))
-                    conversionValue = (int)ToDouble(ruleDict["conversionValue"]);
-
-                int priority = 0;
-                if (ruleDict.ContainsKey("priority"))
-                    priority = (int)ToDouble(ruleDict["priority"]);
-
-                SKANCoarseValue? coarseValue = null;
-                if (ruleDict.ContainsKey("coarseValue") && ruleDict["coarseValue"] is string coarseStr)
-                {
-                    switch (coarseStr.ToLowerInvariant())
-                    {
-                        case "high": coarseValue = SKANCoarseValue.High; break;
-                        case "medium": coarseValue = SKANCoarseValue.Medium; break;
-                        case "low": coarseValue = SKANCoarseValue.Low; break;
-                    }
-                }
-
-                bool lockWindow = false;
-                if (ruleDict.ContainsKey("lockWindow"))
-                {
-                    var lw = ruleDict["lockWindow"];
-                    if (lw is bool lwBool) lockWindow = lwBool;
-                    else if (lw is double lwDouble) lockWindow = lwDouble != 0;
-                }
-
-                Dictionary<string, object> conditions = null;
-                if (ruleDict.ContainsKey("conditions") &&
-                    ruleDict["conditions"] is Dictionary<string, object> cond)
-                {
-                    conditions = cond;
-                }
-
-                result.Add(new SKANConversionRule
-                {
-                    EventName = eventName,
-                    ConversionValue = conversionValue,
-                    Priority = priority,
-                    CoarseValue = coarseValue,
-                    LockWindow = lockWindow,
-                    Conditions = conditions
-                });
+                LayersLogger.Warn($"SKAN decision parse failed: {e.Message}");
+                return false;
             }
-
-            return result;
-        }
-
-        // ── Private: Preset Configurations ──────────────────────────────
-
-        /// <summary>
-        /// Get the preset rules matching the React Native and Swift SDK presets.
-        /// Returns null for unknown preset names.
-        /// </summary>
-        private static List<SKANConversionRule> GetPresetRules(string preset)
-        {
-            switch (preset)
-            {
-                case "subscriptions": return GetSubscriptionsPreset();
-                case "engagement": return GetEngagementPreset();
-                case "iap": return GetIapPreset();
-                default: return null;
-            }
-        }
-
-        private static List<SKANConversionRule> GetSubscriptionsPreset()
-        {
-            return new List<SKANConversionRule>
-            {
-                new SKANConversionRule
-                {
-                    EventName = "app_open", ConversionValue = 1, Priority = 1
-                },
-                new SKANConversionRule
-                {
-                    EventName = "screen_view", ConversionValue = 8, Priority = 3,
-                    Conditions = new Dictionary<string, object> { ["screen_name"] = "onboarding_complete" }
-                },
-                new SKANConversionRule
-                {
-                    EventName = "trial_start", ConversionValue = 20, Priority = 5
-                },
-                new SKANConversionRule
-                {
-                    EventName = "purchase_success", ConversionValue = 35, Priority = 7,
-                    Conditions = new Dictionary<string, object>
-                    {
-                        ["revenue"] = new Dictionary<string, object> { ["<"] = 5.0 }
-                    }
-                },
-                new SKANConversionRule
-                {
-                    EventName = "subscription_start", ConversionValue = 50, Priority = 10
-                },
-                new SKANConversionRule
-                {
-                    EventName = "subscription_renew", ConversionValue = 63, Priority = 15
-                }
-            };
-        }
-
-        private static List<SKANConversionRule> GetEngagementPreset()
-        {
-            return new List<SKANConversionRule>
-            {
-                new SKANConversionRule
-                {
-                    EventName = "app_open", ConversionValue = 1, Priority = 1
-                },
-                new SKANConversionRule
-                {
-                    EventName = "content_open", ConversionValue = 5, Priority = 2
-                },
-                new SKANConversionRule
-                {
-                    EventName = "search", ConversionValue = 12, Priority = 4
-                },
-                new SKANConversionRule
-                {
-                    EventName = "bookmark_add", ConversionValue = 25, Priority = 6
-                },
-                new SKANConversionRule
-                {
-                    EventName = "app_open", ConversionValue = 40, Priority = 8,
-                    Conditions = new Dictionary<string, object>
-                    {
-                        ["session_count"] = new Dictionary<string, object> { [">"] = 3.0 }
-                    }
-                },
-                new SKANConversionRule
-                {
-                    EventName = "app_open", ConversionValue = 63, Priority = 12,
-                    Conditions = new Dictionary<string, object>
-                    {
-                        ["session_count"] = new Dictionary<string, object> { [">"] = 10.0 }
-                    }
-                }
-            };
-        }
-
-        private static List<SKANConversionRule> GetIapPreset()
-        {
-            return new List<SKANConversionRule>
-            {
-                new SKANConversionRule
-                {
-                    EventName = "app_open", ConversionValue = 1, Priority = 1
-                },
-                new SKANConversionRule
-                {
-                    EventName = "paywall_show", ConversionValue = 8, Priority = 2
-                },
-                new SKANConversionRule
-                {
-                    EventName = "purchase_attempt", ConversionValue = 15, Priority = 3
-                },
-                new SKANConversionRule
-                {
-                    EventName = "purchase_success", ConversionValue = 25, Priority = 5,
-                    Conditions = new Dictionary<string, object>
-                    {
-                        ["revenue"] = new Dictionary<string, object> { ["<"] = 1.0 }
-                    }
-                },
-                new SKANConversionRule
-                {
-                    EventName = "purchase_success", ConversionValue = 40, Priority = 7,
-                    Conditions = new Dictionary<string, object>
-                    {
-                        ["revenue"] = new Dictionary<string, object> { [">="] = 1.0, ["<"] = 10.0 }
-                    }
-                },
-                new SKANConversionRule
-                {
-                    EventName = "purchase_success", ConversionValue = 63, Priority = 10,
-                    Conditions = new Dictionary<string, object>
-                    {
-                        ["revenue"] = new Dictionary<string, object> { [">="] = 10.0 }
-                    }
-                }
-            };
         }
     }
 }

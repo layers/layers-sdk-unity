@@ -39,7 +39,7 @@ namespace Layers.Unity
 
         // Kept in sync with package.json by the release pipeline's version
         // injection (release.yml) and verified by scripts/check-versions.
-        internal const string SdkVersion = "3.1.3";
+        internal const string SdkVersion = "3.2.0";
 
         // ── State ────────────────────────────────────────────────────────
 
@@ -467,6 +467,20 @@ namespace Layers.Unity
                 LayersLogger.Warn(
                     $"Screen '{screenName}' was not accepted by the core (queue depth {depthBefore} -> {depthAfter}). " +
                     "It may have been filtered by sampling, rate limiting, or consent.");
+            }
+#endif
+
+            // Forward as a screen_view against SKAN rules (iOS only). Preset rules
+            // key off screen_name, matching the native iOS / Flutter / RN wrappers.
+#if UNITY_IOS && !UNITY_EDITOR
+            if (SKANModule.IsAutoConfigured)
+            {
+                var skanProps = merged != null
+                    ? new Dictionary<string, object>(merged)
+                    : new Dictionary<string, object>();
+                if (!skanProps.ContainsKey("screen_name"))
+                    skanProps["screen_name"] = screenName;
+                SKANModule.ProcessEvent("screen_view", skanProps);
             }
 #endif
         }
