@@ -1,0 +1,44 @@
+# R8/ProGuard keep rules for the Layers Unity SDK.
+#
+# REQUIRED IF YOU ENABLE MINIFY. Copy these lines into your project's custom
+# ProGuard file — Player Settings > Publishing Settings > Minify > "Custom
+# Proguard File", which creates Assets/Plugins/Android/proguard-user.txt — or
+# append this file's contents to your existing one.
+#
+# WHY YOU HAVE TO DO THIS BY HAND (2026-08-04): this step CAN be automated —
+# a `Plugins/Android/*.androidlib` module carrying `consumerProguardFiles`
+# reaches R8 the same way the Flutter and React Native SDKs' rules do, and
+# needs no manual copy. It is not shipped that way yet for one reason: nothing
+# available to this repo can verify it.
+#
+# An .androidlib becomes a Gradle module in EVERY consumer's Android build, and
+# neither local development nor CI exercises that path — CI's Unity job runs
+# EditMode tests plus an Android SCRIPTS-ONLY compile, which never invokes
+# Gradle. A malformed module would therefore ship unvalidated and break the
+# Android build of every game using this package, which is a worse outcome than
+# the null values this file prevents.
+#
+# So: manual for now, automated once there is a Unity Gradle-level build gate
+# to prove it. If you would rather have it automatic today, say so — the
+# mechanism is understood, only the verification is missing.
+#
+# WHAT BREAKS WITHOUT IT: AndroidModule reaches these classes by JNI name —
+#
+#   AndroidModule.cs:77   new AndroidJavaClass(
+#                           "com.google.android.gms.ads.identifier.AdvertisingIdClient")
+#   AndroidModule.cs:170  new AndroidJavaClass(
+#                           "com.android.installreferrer.api.InstallReferrerClient")
+#
+# — which gives R8 no static reference to keep them alive, and
+# play-services-ads-identifier ships no consumer rules of its own. With Minify
+# on, both classes can be stripped, the JNI lookups fail, and the advertising
+# ID and Play install referrer silently return null. It happens in RELEASE
+# ONLY, since minification is off in development builds, so the first place it
+# shows up is production attribution data that is quietly empty.
+
+-keep class com.google.android.gms.ads.identifier.AdvertisingIdClient { *; }
+-keep class com.google.android.gms.ads.identifier.AdvertisingIdClient$Info { *; }
+-dontwarn com.google.android.gms.ads.identifier.**
+
+-keep class com.android.installreferrer.api.** { *; }
+-dontwarn com.android.installreferrer.**

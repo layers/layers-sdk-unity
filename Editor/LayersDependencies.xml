@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android dependencies for the Layers Unity SDK, resolved by the External
+  Dependency Manager for Unity (EDM4U). This is the same mechanism Firebase,
+  AppsFlyer, Adjust and Google's own Unity packages use.
+
+  WHY THIS FILE EXISTS (2026-08-04): it did not, and the package shipped no
+  Android dependency mechanism of any kind — no Dependencies.xml, no
+  .androidlib, no Gradle template. Meanwhile AndroidModule.cs reaches both of
+  these libraries by JNI class lookup:
+
+    AndroidModule.cs:77   com.google.android.gms.ads.identifier.AdvertisingIdClient
+    AndroidModule.cs:170  com.android.installreferrer.api.InstallReferrerClient
+
+  Neither is on a stock Unity project's Android classpath, so both lookups
+  always failed: the Google Advertising ID and the Play install referrer —
+  Android's install-attribution channel — could never resolve for any game
+  using this package. The failures are silent, which is why it was invisible.
+
+  play-services-ads-identifier's own AAR manifest declares
+  <uses-permission android:name="com.google.android.gms.permission.AD_ID"/>,
+  which Android 13+ / targetSdk 33+ requires to read the GAID at all, so that
+  permission merges into the built app transitively with this dependency
+  rather than needing to be declared separately. Declaring it separately would
+  also be wrong: an app that resolves no advertising ID should not request the
+  permission, since Play Console data-safety answers must match.
+
+  Versions match the Kotlin and Flutter SDK pins so a project embedding more
+  than one Layers surface cannot end up resolving two Play Services majors.
+
+  REQUIRES EDM4U. Without it installed in the consuming project this file is
+  inert and the two features stay unavailable — it cannot break a build, but it
+  cannot help either. See unity/README.md for the install link.
+-->
+<dependencies>
+  <androidPackages>
+    <androidPackage spec="com.google.android.gms:play-services-ads-identifier:18.1.0" />
+    <androidPackage spec="com.android.installreferrer:installreferrer:2.2" />
+  </androidPackages>
+</dependencies>

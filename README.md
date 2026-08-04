@@ -196,9 +196,54 @@ SKANModule.UpdatePostbackConversionValue(
 
 ## Android
 
+### Required: External Dependency Manager for Unity (EDM4U)
+
+The advertising ID and install referrer are provided by two Google Android
+libraries, which this package declares in `Editor/LayersDependencies.xml`.
+Resolving that file requires [EDM4U](https://github.com/googlesamples/unity-jar-resolver)
+in your project — the same resolver Firebase, AppsFlyer and Adjust use.
+
+Without EDM4U the libraries never reach your Android classpath. The SDK looks
+them up by JNI class name and degrades quietly rather than crashing, so the
+symptom is not an error: **the advertising ID and install referrer simply
+resolve to null forever.** After installing EDM4U, run
+`Assets > External Dependency Manager > Android Resolver > Resolve`.
+
+The `com.google.android.gms.permission.AD_ID` permission that Android 13+
+requires to read the advertising ID merges into your app automatically with
+the resolved library — you do not need to declare it, and should not if you
+exclude the dependency, since Play Console data-safety answers must match what
+the app actually collects.
+
+### Also required if you enable Minify
+
+EDM4U puts the libraries on your classpath; it does not stop R8 from removing
+them again. The SDK reaches both by JNI class name, so R8 has no static
+reference to keep them alive, and `play-services-ads-identifier` ships no keep
+rules of its own. **With Minify enabled they can be stripped and both features
+silently return null** — in release builds only, since minification is off in
+development builds, so the first sign is production attribution data that is
+quietly empty.
+
+Copy `Plugins/Android/layers-proguard-rules.txt` from this package into your
+custom ProGuard file (Player Settings → Publishing Settings → Minify → _Custom
+Proguard File_, which creates `Assets/Plugins/Android/proguard-user.txt`), or
+append its contents to the one you already have.
+
+This step is manual for now, and deliberately so rather than by necessity. It
+_can_ be automated with a `Plugins/Android/*.androidlib` module carrying
+`consumerProguardFiles`, exactly as the Flutter and React Native SDKs do. That
+module would join the Gradle build of every project using this package, and
+nothing in the Layers repo currently exercises a Unity Gradle build — CI runs
+EditMode tests and an Android scripts-only compile, neither of which invokes
+Gradle. Shipping it unverified would risk breaking every consumer's Android
+build, which is worse than the null values it prevents. It will be automated
+once there is a build gate that can prove it.
+
 ### Google Advertising ID
 
-Auto-collected on init. Respects limit-ad-tracking. Manual access:
+Auto-collected on init (requires EDM4U, above). Respects limit-ad-tracking.
+Manual access:
 
 ```csharp
 #if UNITY_ANDROID
@@ -211,7 +256,7 @@ AndroidModule.GetAdvertisingId((gaid, isLimited) =>
 
 ### Install Referrer
 
-Auto-collected on first launch. Manual access:
+Auto-collected on first launch (requires EDM4U, above). Manual access:
 
 ```csharp
 #if UNITY_ANDROID
