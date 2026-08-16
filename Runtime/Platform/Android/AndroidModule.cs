@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using Layers.Unity.Internal;
 using UnityEngine;
 
 namespace Layers.Unity
@@ -601,18 +602,30 @@ namespace Layers.Unity
                     string path = uri.Call<string>("getPath");
                     if (!string.IsNullOrEmpty(path)) result["path"] = path;
 
+                    // Decode the query ourselves rather than calling
+                    // getQueryParameter. That JNI path and the editor fallback
+                    // below used to disagree: AOSP's getQueryParameter decodes
+                    // with convertPlus=true ('+' -> space) while the fallback's
+                    // Uri.UnescapeDataString left '+' literal, so the same deep
+                    // link produced different campaign names in the Editor and
+                    // on device. One decoder now serves both.
+                    var queryParams = FormUrlDecoding.ParseQuery(
+                        uri.Call<string>("getEncodedQuery"));
+
                     // UTM parameters
                     foreach (string param in UtmParams)
                     {
-                        string value = uri.Call<string>("getQueryParameter", param);
-                        if (!string.IsNullOrEmpty(value)) result[param] = value;
+                        if (queryParams.TryGetValue(param, out string value) &&
+                            !string.IsNullOrEmpty(value))
+                            result[param] = value;
                     }
 
                     // Click ID parameters (gclid, fbclid, ttclid, etc.)
                     foreach (string param in ClickIdParams)
                     {
-                        string value = uri.Call<string>("getQueryParameter", param);
-                        if (!string.IsNullOrEmpty(value)) result[param] = value;
+                        if (queryParams.TryGetValue(param, out string value) &&
+                            !string.IsNullOrEmpty(value))
+                            result[param] = value;
                     }
                 }
             }
@@ -673,18 +686,17 @@ namespace Layers.Unity
 
             try
             {
-                string[] pairs = referrer.Split('&');
-                foreach (string pair in pairs)
+                // The referrer is application/x-www-form-urlencoded, the same
+                // wire format the Kotlin SDK decodes with java.net.URLDecoder —
+                // '+' is a space, '%2B' is a literal '+'. Uri.UnescapeDataString
+                // (used here previously) is RFC 3986 percent-decoding, which
+                // left '+' literal and made Unity disagree with Android on the
+                // same install. See FormUrlDecoding for the rule.
+                foreach (var entry in FormUrlDecoding.ParseQuery(referrer))
                 {
-                    int eqIndex = pair.IndexOf('=');
-                    if (eqIndex < 0) continue;
-
-                    string key = Uri.UnescapeDataString(pair.Substring(0, eqIndex));
-                    string value = Uri.UnescapeDataString(pair.Substring(eqIndex + 1));
-
-                    if (!string.IsNullOrWhiteSpace(value) && IsAttributionParam(key))
+                    if (!string.IsNullOrWhiteSpace(entry.Value) && IsAttributionParam(entry.Key))
                     {
-                        result[key] = value;
+                        result[entry.Key] = entry.Value;
                     }
                 }
             }
@@ -749,28 +761,14 @@ namespace Layers.Unity
         }
 
         /// <summary>
-        /// Simple query string parser for non-Android platforms (Editor fallback).
+        /// Query string parser for non-Android platforms (Editor fallback).
+        /// Values are application/x-www-form-urlencoded, so '+' decodes to a
+        /// space and '%2B' to a literal '+' — the same rule the on-device JNI
+        /// path above applies. See <see cref="FormUrlDecoding"/>.
         /// </summary>
         private static Dictionary<string, string> ParseQueryString(string query)
         {
-            var result = new Dictionary<string, string>();
-            if (string.IsNullOrEmpty(query)) return result;
-
-            // Strip leading '?'
-            if (query.StartsWith("?")) query = query.Substring(1);
-
-            string[] pairs = query.Split('&');
-            foreach (string pair in pairs)
-            {
-                int eqIndex = pair.IndexOf('=');
-                if (eqIndex < 0) continue;
-
-                string key = Uri.UnescapeDataString(pair.Substring(0, eqIndex));
-                string value = Uri.UnescapeDataString(pair.Substring(eqIndex + 1));
-                result[key] = value;
-            }
-
-            return result;
+            return FormUrlDecoding.ParseQuery(query);
         }
     }
 

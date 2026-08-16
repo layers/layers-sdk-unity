@@ -1,6 +1,6 @@
 # Layers Analytics SDK for Unity
 
-Rust-powered analytics SDK for Unity — iOS and Android.
+Analytics SDK for Unity — iOS and Android.
 
 > WebGL is not supported. For web games, integrate the `@layers/client` web SDK from the hosting page instead.
 
@@ -13,7 +13,7 @@ Add to your `Packages/manifest.json`:
 ```json
 {
   "dependencies": {
-    "com.layers.analytics": "https://github.com/layers/layers-sdk-unity.git#v3.2.6"
+    "com.layers.analytics": "https://github.com/layers/layers-sdk-unity.git#v3.2.7"
   }
 }
 ```
@@ -21,7 +21,7 @@ Add to your `Packages/manifest.json`:
 Or via Unity Editor: **Window > Package Manager > + > Add package from git URL**:
 
 ```
-https://github.com/layers/layers-sdk-unity.git#v3.2.6
+https://github.com/layers/layers-sdk-unity.git#v3.2.7
 ```
 
 ## Quick Start
@@ -170,7 +170,7 @@ if (ATTModule.IsAvailable())
 Add a `LayersSettings` asset via **Assets > Create > Layers > Settings** to configure:
 
 - ATT usage description (the prompt shown to users)
-- SKAdNetwork IDs (17 defaults included)
+- SKAdNetwork IDs (23 defaults included)
 - URL schemes for deep linking
 - Associated domains for Universal Links
 
@@ -333,11 +333,6 @@ LayersSDK.OnError += (message) =>
 - iOS 13.0+ / Android API 21+
 - IL2CPP build (iOS requires it; Android recommended)
 
-## Architecture
+## How Delivery Works
 
-This SDK uses a shared Rust core compiled to native libraries:
-
-- **iOS**: Static library (`.a`) linked via `__Internal` P/Invoke
-- **Android**: Shared library (`.so`) per ABI via P/Invoke
-
-The Rust core handles event queuing, serialization, persistence, retry, and batching. The C# wrapper provides Unity-specific integrations (lifecycle, coroutine-based networking, platform APIs).
+Events are queued locally, serialized, and persisted to disk so nothing is lost across app restarts or crashes. A coroutine-based flush loop batches queued events and delivers them over HTTP, retrying automatically on transient failures. On top of this, the C# layer adds Unity-specific integrations: lifecycle handling (`Application.quitting`, pause/resume), coroutine-based networking, and platform APIs for iOS and Android.

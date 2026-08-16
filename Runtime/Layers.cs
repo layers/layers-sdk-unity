@@ -39,7 +39,7 @@ namespace Layers.Unity
 
         // Kept in sync with package.json by the release pipeline's version
         // injection (release.yml) and verified by scripts/check-versions.
-        internal const string SdkVersion = "3.2.6";
+        internal const string SdkVersion = "3.2.7";
 
         // ── State ────────────────────────────────────────────────────────
 
@@ -1469,6 +1469,16 @@ namespace Layers.Unity
             if (!_isInitialized) return;
 
 #if !UNITY_WEBGL || UNITY_EDITOR
+            // ORDERING INVARIANT — these three run in this order, and moving any
+            // of them loses events:
+            //
+            //   1. StopPeriodicFlush() aborts an in-flight POST and hands the
+            //      batch it had already drained BACK to the Rust queue. That
+            //      requeue needs a LIVE core, so it must precede step 3.
+            //   2. FlushBlocking() takes the crash-safety disk snapshot. It must
+            //      follow step 1 or the requeued batch is never written and dies
+            //      with the process — the exact loss the requeue exists to stop.
+            //   3. _platform.Shutdown() (further down) tears the core down.
             _flushManager?.StopPeriodicFlush();
             if (_flushManager != null) _flushManager.FlushBlocking();
             // Test mode: same crash-safety persist, minus the P/Invoke.

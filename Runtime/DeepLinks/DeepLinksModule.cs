@@ -292,45 +292,13 @@ namespace Layers.Unity
 
         /// <summary>
         /// Parse a query string (e.g. "?key1=val1&amp;key2=val2") into a dictionary.
-        /// Handles URL-encoded values. Duplicate keys are overwritten (last wins).
+        /// Values are application/x-www-form-urlencoded, so '+' decodes to a
+        /// space and '%2B' to a literal '+'. Duplicate keys: last wins.
+        /// See <see cref="FormUrlDecoding"/> for the rule.
         /// </summary>
         private static Dictionary<string, string> ParseQueryString(string query)
         {
-            var result = new Dictionary<string, string>();
-
-            if (string.IsNullOrEmpty(query)) return result;
-
-            // Strip leading '?'
-            var raw = query;
-            if (raw.StartsWith("?"))
-            {
-                raw = raw.Substring(1);
-            }
-
-            if (raw.Length == 0) return result;
-
-            var pairs = raw.Split('&');
-            for (int i = 0; i < pairs.Length; i++)
-            {
-                var pair = pairs[i];
-                if (pair.Length == 0) continue;
-
-                int eqIndex = pair.IndexOf('=');
-                if (eqIndex < 0)
-                {
-                    // Key with no value (e.g. "flag")
-                    string key = Uri.UnescapeDataString(pair);
-                    result[key] = "";
-                }
-                else
-                {
-                    string key = Uri.UnescapeDataString(pair.Substring(0, eqIndex));
-                    string value = Uri.UnescapeDataString(pair.Substring(eqIndex + 1));
-                    result[key] = value;
-                }
-            }
-
-            return result;
+            return FormUrlDecoding.ParseQuery(query);
         }
 
         /// <summary>
