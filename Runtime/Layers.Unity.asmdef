@@ -10,9 +10,5 @@
   "autoReferenced": true,
   "defineConstraints": [],
   "versionDefines": [],
-  "noEngineReferences": false,
-  "internalsVisibleTo": [
-    "Layers.Unity.Tests.Runtime",
-    "Layers.Unity.Tests.Editor"
-  ]
+  "noEngineReferences": false
 }

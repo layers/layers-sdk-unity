@@ -13,6 +13,15 @@ namespace Layers.Unity.Internal
     /// Supports HTTP ETag / 304 Not Modified to avoid re-downloading unchanged config.
     /// Default poll interval is 300 seconds (5 minutes), matching the Rust core's
     /// remote config TTL.
+    ///
+    /// Request ownership is explicit rather than scoped to a <c>using</c> block.
+    /// A <c>using</c> only disposes on the paths that run to the end of the block,
+    /// and a stopped coroutine is not one of them: Unity does not resume — or
+    /// unwind — an iterator it has stopped, so the request a fetch is suspended on
+    /// survives the coroutine that owns it. <see cref="StopPolling"/> therefore
+    /// takes ownership of the in-flight request and aborts + disposes it itself.
+    /// The invariant is <see cref="CreatedRequestCount"/> ==
+    /// <see cref="ReleasedRequestCount"/> once polling has stopped.
     /// </summary>
     internal class RemoteConfigPoller
     {
@@ -21,6 +30,22 @@ namespace Layers.Unity.Internal
         private readonly string _appId;
         private string _etag;
         private Coroutine _pollingCoroutine;
+
+        // The nested fetch coroutine. Stopping PollLoop does NOT stop this one:
+        // it is a separate coroutine registered on the runner, and StopCoroutine
+        // reaches only the handle it is given. StopPolling needs its own handle.
+        private Coroutine _fetchCoroutine;
+
+        // The request a fetch is currently suspended on. Whoever nulls this field
+        // owns disposing that request, and nothing may read it afterwards — the
+        // handle is native memory that Dispose frees.
+        private UnityWebRequest _inFlightRequest;
+
+        // Serializes fetches so there is only ever one owner of _inFlightRequest.
+        // Mirrors FlushManager's _isFlushing guard: a periodic tick and a one-off
+        // FetchNow must not both have a request in flight, or stopping releases
+        // one and orphans the other.
+        private bool _isFetching;
 
         /// <summary>
         /// Fired after a successful 200 response with the config JSON body.
@@ -33,6 +58,24 @@ namespace Layers.Unity.Internal
         /// HTTP request timeout in seconds for config fetches.
         /// </summary>
         private const int RequestTimeoutSec = 10;
+
+        /// <summary>
+        /// Whether a config request is in flight right now.
+        /// </summary>
+        internal bool HasInFlightRequest => _inFlightRequest != null;
+
+        /// <summary>
+        /// How many <see cref="UnityWebRequest"/> handles this poller has created.
+        /// </summary>
+        internal int CreatedRequestCount { get; private set; }
+
+        /// <summary>
+        /// How many of those handles it has disposed. An abandoned native handle
+        /// is invisible from the outside — no exception, no log, no failed test —
+        /// so the accounting is kept here and asserted by
+        /// <c>RemoteConfigPollerTests</c>.
+        /// </summary>
+        internal int ReleasedRequestCount { get; private set; }
 
         internal RemoteConfigPoller(LayersRunner runner, string baseUrl, string appId)
         {
@@ -54,44 +97,152 @@ namespace Layers.Unity.Internal
         }
 
         /// <summary>
-        /// Stop the polling coroutine.
+        /// Stop polling and release everything the poller owns: the poll loop, the
+        /// nested fetch coroutine, and the request that fetch is suspended on.
+        ///
+        /// Stopping the poll loop alone leaves the other two alive. That was the
+        /// defect: <c>StopCoroutine(_pollingCoroutine)</c> does not stop the nested
+        /// FetchConfig coroutine, does not abort the UnityWebRequest FetchConfig is
+        /// yielded on, and does not unwind the block that was meant to dispose it.
+        /// The request stayed live inside native curl with its handle never freed —
+        /// so <c>LayersSDK.Shutdown()</c> left a live HTTP request on device, and in
+        /// CI the accumulated orphans tore down at editor exit as a storm of
+        /// "Curl error 42: Callback aborted" that ended in SIGSEGV (see the
+        /// test-mode gate in Layers.Initialize).
+        ///
+        /// Safe to call repeatedly and safe with nothing in flight.
         /// </summary>
         internal void StopPolling()
         {
-            if (_pollingCoroutine != null)
+            // Claim the request BEFORE stopping the coroutines. Whichever side
+            // nulls the field owns disposal, so claiming first makes this method
+            // the sole owner regardless of what a given Unity version does with a
+            // stopped iterator — the fetch's own release path re-checks ownership
+            // and stands down.
+            UnityWebRequest request = _inFlightRequest;
+            _inFlightRequest = null;
+
+            StopRunnerCoroutine(ref _pollingCoroutine);
+            StopRunnerCoroutine(ref _fetchCoroutine);
+            _isFetching = false;
+
+            if (request == null) return;
+
+            // Abort cancels the native transfer immediately; on a request that
+            // already completed it is a no-op. Dispose then frees the handle.
+            try
             {
-                _runner.StopCoroutine(_pollingCoroutine);
-                _pollingCoroutine = null;
+                request.Abort();
             }
+            catch (Exception e)
+            {
+                LayersLogger.Warn($"Aborting in-flight config request threw: {e.Message}");
+            }
+
+            ReleaseRequest(request);
+            LayersLogger.Log("Remote config polling stopped; in-flight request aborted");
         }
 
         /// <summary>
         /// Trigger a one-off config fetch outside the periodic schedule.
+        /// No-op while a fetch is already in flight — its response is the same
+        /// config this call would ask for, and a second concurrent request would
+        /// leave one of the two handles unowned.
         /// </summary>
         internal void FetchNow()
         {
-            _runner.StartCoroutine(FetchConfig());
+            if (StartFetch() == null)
+                LayersLogger.Log("Remote config fetch skipped — one already in flight");
+        }
+
+        /// <summary>
+        /// Start the fetch coroutine and record its handle, so StopPolling can
+        /// stop it. Returns null when a fetch is already in flight.
+        /// </summary>
+        private Coroutine StartFetch()
+        {
+            if (_isFetching) return null;
+
+            // Claimed before StartCoroutine: Unity runs the coroutine body
+            // synchronously up to its first yield, so the flag must already be
+            // set when FetchConfig's own bookkeeping runs.
+            _isFetching = true;
+            try
+            {
+                _fetchCoroutine = _runner.StartCoroutine(FetchConfig());
+            }
+            catch (Exception e)
+            {
+                // The runner is gone (quit tore the scene down) or the body threw
+                // before its first yield. Release the guard rather than latch it —
+                // a stuck flag would silently retire config polling for the rest
+                // of the process.
+                _isFetching = false;
+                LayersLogger.Warn($"Remote config fetch could not start: {e.Message}");
+                return null;
+            }
+            return _fetchCoroutine;
+        }
+
+        /// <summary>
+        /// Stop a coroutine this poller started and forget its handle.
+        /// </summary>
+        private void StopRunnerCoroutine(ref Coroutine coroutine)
+        {
+            Coroutine handle = coroutine;
+            coroutine = null;
+            if (handle == null) return;
+
+            // The runner is a MonoBehaviour: if it was destroyed first (quit tears
+            // the scene down around Shutdown) its coroutines are already gone.
+            // Unity's == null covers the destroyed-but-not-null case.
+            if (_runner == null) return;
+            _runner.StopCoroutine(handle);
+        }
+
+        /// <summary>
+        /// Dispose a request handle and count it. Never throws.
+        /// </summary>
+        private void ReleaseRequest(UnityWebRequest request)
+        {
+            try
+            {
+                request.Dispose();
+            }
+            catch (Exception e)
+            {
+                LayersLogger.Warn($"Disposing config request threw: {e.Message}");
+            }
+            ReleasedRequestCount++;
         }
 
         private IEnumerator PollLoop(float intervalSec)
         {
             // Initial fetch immediately
-            yield return _runner.StartCoroutine(FetchConfig());
+            yield return StartFetch();
 
             while (true)
             {
                 yield return new WaitForSecondsRealtime(intervalSec);
-                yield return _runner.StartCoroutine(FetchConfig());
+                yield return StartFetch();
             }
         }
 
         private IEnumerator FetchConfig()
         {
-            // Build URL with query parameters matching the Flutter pattern
-            string url = $"{_baseUrl}/config?app_id={UnityWebRequest.EscapeURL(_appId)}&platform={DeviceInfoCollector.RuntimePlatform}";
-
-            using (var request = UnityWebRequest.Get(url))
+            // Everything runs inside the try, request construction included: an
+            // exception before the first yield would otherwise leave _isFetching
+            // latched true and kill polling for the rest of the process.
+            UnityWebRequest request = null;
+            try
             {
+                // Build URL with query parameters matching the Flutter pattern
+                string url = $"{_baseUrl}/config?app_id={UnityWebRequest.EscapeURL(_appId)}&platform={DeviceInfoCollector.RuntimePlatform}";
+
+                request = UnityWebRequest.Get(url);
+                _inFlightRequest = request;
+                CreatedRequestCount++;
+
                 request.SetRequestHeader("X-App-Id", _appId);
                 request.SetRequestHeader("Accept", "application/json");
 
@@ -101,6 +252,11 @@ namespace Layers.Unity.Internal
                 request.timeout = RequestTimeoutSec;
 
                 yield return request.SendWebRequest();
+
+                // StopPolling claims _inFlightRequest before it disposes. If it ran
+                // while this coroutine was suspended, `request` is a freed handle —
+                // read nothing off it.
+                if (!ReferenceEquals(_inFlightRequest, request)) yield break;
 
                 if (request.responseCode == 200)
                 {
@@ -142,6 +298,17 @@ namespace Layers.Unity.Internal
                     LayersLogger.Warn(
                         $"Remote config fetch failed (HTTP {request.responseCode}): {request.error}");
                 }
+            }
+            finally
+            {
+                // Release only if StopPolling has not already taken ownership —
+                // double-disposing a native handle is the other half of this bug.
+                if (request != null && ReferenceEquals(_inFlightRequest, request))
+                {
+                    _inFlightRequest = null;
+                    ReleaseRequest(request);
+                }
+                _isFetching = false;
             }
         }
     }

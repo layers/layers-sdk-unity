@@ -39,7 +39,7 @@ namespace Layers.Unity
 
         // Kept in sync with package.json by the release pipeline's version
         // injection (release.yml) and verified by scripts/check-versions.
-        internal const string SdkVersion = "3.2.5";
+        internal const string SdkVersion = "3.2.6";
 
         // ── State ────────────────────────────────────────────────────────
 
@@ -145,6 +145,19 @@ namespace Layers.Unity
         /// The current SDK configuration, or null if not initialized.
         /// </summary>
         internal static LayersConfig Config => _config;
+
+        /// <summary>
+        /// Whether any live network transport is wired up.
+        ///
+        /// Must stay false under <see cref="LayersTestMode"/>: the mock
+        /// platform is the only thing a test run may talk to, and a transport
+        /// here means real HTTP leaving the test process. Both transports —
+        /// FlushManager and RemoteConfigPoller — leave requests in flight
+        /// that outlive their owning coroutine, which crashes the editor on
+        /// exit; the gate is cheaper to keep than the crash is to diagnose.
+        /// </summary>
+        internal static bool HasNetworkTransports =>
+            _flushManager != null || _configPoller != null;
 
         // ── Initialization ───────────────────────────────────────────────
 
@@ -258,9 +271,21 @@ namespace Layers.Unity
             // and HTTP delivery via fetch/sendBeacon. FlushManager uses NativeBindings
             // (P/Invoke) which is not available on WebGL, so skip it entirely.
 #if !UNITY_WEBGL || UNITY_EDITOR
-            // Native: start the coroutine-based periodic flush with UnityWebRequest
-            _flushManager = new FlushManager(runner, (uint)config.MaxBatchSize);
-            _flushManager.StartPeriodicFlush(config.FlushIntervalMs / 1000f);
+            // FlushManager IS the P/Invoke transport: every one of its calls
+            // (layers_flush, layers_drain_batch, layers_should_attempt_flush,
+            // layers_record_flush_result) goes straight to NativeBindings,
+            // bypassing ILayersPlatform. Test mode exists precisely because
+            // there is no native library to call, so constructing one would
+            // guarantee a DllNotFoundException the moment anything flushed --
+            // including the FlushBlocking() on the Shutdown path that every
+            // [TearDown] runs. Leave it null and let the flush entry points
+            // fall back to _platform.Flush(), exactly as WebGL already does.
+            if (!LayersTestMode.IsEnabled)
+            {
+                // Native: start the coroutine-based periodic flush with UnityWebRequest
+                _flushManager = new FlushManager(runner, (uint)config.MaxBatchSize);
+                _flushManager.StartPeriodicFlush(config.FlushIntervalMs / 1000f);
+            }
 #endif
 
             // Start remote config polling (default 5 minute interval).
@@ -269,23 +294,44 @@ namespace Layers.Unity
 #if UNITY_WEBGL && !UNITY_EDITOR
             // jslib handles config polling — see LayersWebGL_StartConfigPolling
 #else
-            string baseUrl = !string.IsNullOrEmpty(config.BaseUrl)
-                ? config.BaseUrl
-                : "https://in.layers.com";
-            _configPoller = new RemoteConfigPoller(runner, baseUrl, config.AppId);
+            // Test mode gets no poller, for the same reason it gets no
+            // FlushManager: it is a live network transport, and the mock
+            // platform exists precisely so tests touch neither the native
+            // library nor the network.
+            //
+            // Leaving it on was worse than a stray request. PollLoop fetches
+            // immediately rather than after the first interval, so every
+            // [SetUp] that called Initialize fired a real GET at
+            // in.layers.com from the CI container — hundreds across the
+            // suite. StopPolling then stops the PollLoop coroutine, which
+            // neither cancels the nested FetchConfig coroutine nor aborts the
+            // UnityWebRequest it is suspended on, so the `using` never
+            // disposes and the request is orphaned inside native curl. At
+            // editor exit those orphans tear down as a storm of
+            // "Curl error 42: Callback aborted", and when one is still queued
+            // as the subsystem goes away ("Cannot execute UnityWebRequest
+            // without tasks") the editor takes SIGSEGV — exit 139 AFTER a
+            // fully passing 418/418 result, failing the job on teardown noise.
+            if (!LayersTestMode.IsEnabled)
+            {
+                string baseUrl = !string.IsNullOrEmpty(config.BaseUrl)
+                    ? config.BaseUrl
+                    : "https://in.layers.com";
+                _configPoller = new RemoteConfigPoller(runner, baseUrl, config.AppId);
 
-            // Subscribe to config updates for SKAN auto-config (iOS only)
+                // Subscribe to config updates for SKAN auto-config (iOS only)
 #if UNITY_IOS && !UNITY_EDITOR
-            _configPoller.OnConfigUpdated += OnRemoteConfigUpdated;
+                _configPoller.OnConfigUpdated += OnRemoteConfigUpdated;
 #endif
-            // Tier 4: notify feature-flag listeners after every successful
-            // remote config update — the Rust core swaps in fresh
-            // definitions inside _platform.UpdateRemoteConfig (which runs
-            // before this callback fires), so calling GetAllFlags() in the
-            // listener observes the new state.
-            _configPoller.OnConfigUpdated += _ => NotifyFeatureFlagListeners();
+                // Tier 4: notify feature-flag listeners after every successful
+                // remote config update — the Rust core swaps in fresh
+                // definitions inside _platform.UpdateRemoteConfig (which runs
+                // before this callback fires), so calling GetAllFlags() in the
+                // listener observes the new state.
+                _configPoller.OnConfigUpdated += _ => NotifyFeatureFlagListeners();
 
-            _configPoller.StartPolling(300f);
+                _configPoller.StartPolling(300f);
+            }
 #endif
 
             // Initialize deep links module.
@@ -678,7 +724,11 @@ namespace Layers.Unity
             // On WebGL, delegate directly to the jslib which handles fetch internally
             _platform?.Flush();
 #else
-            _flushManager?.FlushNow();
+            // No FlushManager means no P/Invoke transport for this session
+            // (test mode). Flush through the platform instead so the call is
+            // still honoured -- and still observable to the mock.
+            if (_flushManager != null) _flushManager.FlushNow();
+            else _platform?.Flush();
 #endif
         }
 
@@ -701,9 +751,16 @@ namespace Layers.Unity
             onComplete?.Invoke();
 #else
             if (_flushManager != null)
+            {
                 _flushManager.FlushWithCallback(onComplete);
+            }
             else
+            {
+                // Test mode: no native transport, so the platform flush is the
+                // whole operation and it completes synchronously.
+                _platform?.Flush();
                 onComplete?.Invoke();
+            }
 #endif
         }
 
@@ -1413,7 +1470,9 @@ namespace Layers.Unity
 
 #if !UNITY_WEBGL || UNITY_EDITOR
             _flushManager?.StopPeriodicFlush();
-            _flushManager?.FlushBlocking();
+            if (_flushManager != null) _flushManager.FlushBlocking();
+            // Test mode: same crash-safety persist, minus the P/Invoke.
+            else _platform?.Flush();
 #endif
 
 #if UNITY_IOS && !UNITY_EDITOR
@@ -1911,8 +1970,17 @@ namespace Layers.Unity
             // in the background the in-flight request and the in-memory
             // queue would both be lost. Then still attempt a network flush —
             // the OS often grants a moment before suspending.
-            _flushManager?.PersistPendingForSuspend();
-            _flushManager?.FlushNow();
+            if (_flushManager != null)
+            {
+                _flushManager.PersistPendingForSuspend();
+                _flushManager.FlushNow();
+            }
+            else
+            {
+                // Test mode: no native transport to suspend, but the flush
+                // itself must still happen — same fallback as Flush().
+                _platform?.Flush();
+            }
 #endif
         }
 
@@ -1933,7 +2001,8 @@ namespace Layers.Unity
 #if UNITY_WEBGL && !UNITY_EDITOR
             _platform?.Flush();
 #else
-            _flushManager?.FlushNow();
+            if (_flushManager != null) _flushManager.FlushNow();
+            else _platform?.Flush();
 #endif
         }
 
