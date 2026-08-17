@@ -182,6 +182,17 @@ namespace Layers.Unity.Internal
         internal static extern IntPtr layers_flush_headers_json();
 
         /// <summary>
+        /// Return the headers for a <c>/config</c> GET as a JSON string of
+        /// [key, value] pairs: the same static set the events path sends
+        /// (X-App-Id, X-Environment, X-SDK-Version, X-Cookieless) minus
+        /// Content-Type, plus Accept and — when one is cached —
+        /// If-None-Match.
+        /// Caller MUST free via layers_free_string.
+        /// </summary>
+        [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern IntPtr layers_config_headers_json();
+
+        /// <summary>
         /// Return the events ingest URL.
         /// Caller MUST free via layers_free_string.
         /// </summary>

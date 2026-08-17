@@ -113,9 +113,43 @@ namespace Layers.Unity.Internal
             return null;
         }
 
+        /// <summary>
+        /// Whether this mock models the core's own <c>$first_open</c>
+        /// emission. Default true — the real core always does it.
+        ///
+        /// The Rust core builds and queues <c>$first_open</c> from INSIDE
+        /// <c>set_device_context</c> (core/src/client.rs — the
+        /// <c>emit_pending_first_open()</c> call), once per install, gated by
+        /// its own persisted identity record. That emission is invisible to a
+        /// mock that only records the context JSON, so a wrapper emitting its
+        /// own <c>$first_open</c> looked like exactly one event to every test
+        /// while shipping two to the server. Modelling it here makes
+        /// <see cref="TrackedEvents"/> a CROSS-LAYER counter: the core's copy
+        /// and anything the wrapper tracks land in the same list.
+        /// </summary>
+        internal bool SimulateCoreFirstOpen = true;
+
+        /// <summary>
+        /// Once per mock instance, mirroring "once per install" — the real
+        /// gate is persisted, so a new install is a new
+        /// <see cref="LayersTestMode.Enable"/>. Deliberately NOT cleared by
+        /// <see cref="ClearTestState"/>.
+        /// </summary>
+        private bool _coreFirstOpenEmitted;
+
         public string SetDeviceContext(string contextJson)
         {
             DeviceContextCalls.Add(contextJson);
+            if (SimulateCoreFirstOpen && !_coreFirstOpenEmitted)
+            {
+                _coreFirstOpenEmitted = true;
+                // Recorded directly rather than through Track(): this is the
+                // core emitting on its own behalf, not a wrapper call
+                // crossing the FFI boundary. Both land in TrackedEvents,
+                // which is the point.
+                TrackedEvents.Add(("$first_open", "{}"));
+                if (AutoIncrementQueueDepth) SimulatedQueueDepth++;
+            }
             return null;
         }
 
@@ -135,9 +169,29 @@ namespace Layers.Unity.Internal
             return null;
         }
 
+        /// <summary>
+        /// The <c>X-SDK-Version</c> the simulated core stamps on EVERY
+        /// endpoint. Deliberately unrelated to <c>LayersSDK.SdkVersion</c>: a
+        /// wrapper that re-composes <c>unity/&lt;version&gt;</c> by hand would
+        /// produce a different string and miss this one, which is the drift
+        /// the header tests exist to catch.
+        /// </summary>
+        internal const string MockSdkVersionHeader =
+            "unity/0.0.0-mock rust-core/0.0.0-mock engine/rust";
+
         public string FlushHeadersJson()
         {
-            return "{}";
+            return "{\"Content-Type\":\"application/json\",\"X-App-Id\":\"mock-app\","
+                + "\"X-Environment\":\"development\",\"X-SDK-Version\":\""
+                + MockSdkVersionHeader + "\"}";
+        }
+
+        public string ConfigHeadersJson()
+        {
+            // Array-of-pairs — the shape layers_config_headers_json returns.
+            return "[[\"Accept\",\"application/json\"],[\"X-App-Id\",\"mock-app\"],"
+                + "[\"X-Environment\",\"development\"],[\"X-SDK-Version\",\""
+                + MockSdkVersionHeader + "\"]]";
         }
 
         public string EventsUrl()

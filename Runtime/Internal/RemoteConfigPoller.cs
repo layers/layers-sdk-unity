@@ -1,5 +1,6 @@
 using System;
 using System.Collections;
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Networking;
 
@@ -28,6 +29,12 @@ namespace Layers.Unity.Internal
         private readonly LayersRunner _runner;
         private readonly string _baseUrl;
         private readonly string _appId;
+
+        // Supplies the core's own /config headers as JSON. Injected rather
+        // than called directly so a test run — which has no native library to
+        // P/Invoke into — can still assert on what goes onto the request.
+        private readonly Func<string> _configHeadersJson;
+
         private string _etag;
         private Coroutine _pollingCoroutine;
 
@@ -77,12 +84,32 @@ namespace Layers.Unity.Internal
         /// </summary>
         internal int ReleasedRequestCount { get; private set; }
 
-        internal RemoteConfigPoller(LayersRunner runner, string baseUrl, string appId)
+        /// <param name="configHeadersJson">
+        /// Returns the core's <c>/config</c> headers as JSON. Required: without
+        /// it the request carries no <c>X-SDK-Version</c>, and a config the
+        /// server targets by SDK version — a version-scoped killswitch, say —
+        /// cannot reach this install at all.
+        /// </param>
+        internal RemoteConfigPoller(
+            LayersRunner runner, string baseUrl, string appId, Func<string> configHeadersJson)
         {
             _runner = runner;
             // Ensure no trailing slash on the base URL
             _baseUrl = baseUrl != null ? baseUrl.TrimEnd('/') : "https://in.layers.com";
             _appId = appId;
+            _configHeadersJson = configHeadersJson;
+        }
+
+        /// <summary>
+        /// The value of <paramref name="name"/> on the request currently in
+        /// flight, or null when none is. A narrow accessor rather than exposing
+        /// the handle: the request is native memory this poller owns, and
+        /// whoever nulls <c>_inFlightRequest</c> disposes it.
+        /// </summary>
+        internal string InFlightRequestHeader(string name)
+        {
+            UnityWebRequest request = _inFlightRequest;
+            return request == null ? null : request.GetRequestHeader(name);
         }
 
         /// <summary>
@@ -216,6 +243,64 @@ namespace Layers.Unity.Internal
             ReleasedRequestCount++;
         }
 
+        /// <summary>
+        /// Copy the core's <c>/config</c> headers onto <paramref name="request"/>.
+        ///
+        /// Never throws and never aborts the fetch: a config poll that cannot
+        /// reach the core is still worth sending, and the header set below is
+        /// re-established by the caller. Content-Type is skipped — the core
+        /// already omits it for a GET, and setting one on a bodyless request
+        /// is meaningless.
+        ///
+        /// Returns whether <c>X-SDK-Version</c> ended up on the request, so the
+        /// caller can stamp the fallback shape rather than send a GET the
+        /// server cannot version-target at all.
+        /// </summary>
+        private bool ApplyCoreConfigHeaders(UnityWebRequest request)
+        {
+            if (_configHeadersJson == null) return false;
+
+            Dictionary<string, string> headers;
+            try
+            {
+                string json = _configHeadersJson();
+                if (string.IsNullOrEmpty(json)) return false;
+                headers = FlushManager.ParseHeaders(json);
+            }
+            catch (Exception e)
+            {
+                LayersLogger.Warn($"Could not read config headers from the core: {e.Message}");
+                return false;
+            }
+
+            bool sdkVersionApplied = false;
+            foreach (var header in headers)
+            {
+                if (string.IsNullOrEmpty(header.Key)) continue;
+                if (string.Equals(header.Key, "Content-Type", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                try
+                {
+                    request.SetRequestHeader(header.Key, header.Value ?? string.Empty);
+                }
+                catch (Exception e)
+                {
+                    // UnityWebRequest rejects malformed names/values outright.
+                    LayersLogger.Warn($"Skipping config header '{header.Key}': {e.Message}");
+                    continue;
+                }
+
+                if (string.Equals(header.Key, "X-SDK-Version", StringComparison.OrdinalIgnoreCase)
+                    && !string.IsNullOrEmpty(header.Value))
+                {
+                    sdkVersionApplied = true;
+                }
+            }
+
+            return sdkVersionApplied;
+        }
+
         private IEnumerator PollLoop(float intervalSec)
         {
             // Initial fetch immediately
@@ -243,9 +328,32 @@ namespace Layers.Unity.Internal
                 _inFlightRequest = request;
                 CreatedRequestCount++;
 
+                // The core's headers first — X-SDK-Version above all, which is
+                // what lets the server answer this GET version-specifically.
+                // X-App-Id and Accept are re-set afterwards so the request is
+                // still well-formed if the core could not answer.
+                bool sdkVersionApplied = ApplyCoreConfigHeaders(request);
+
                 request.SetRequestHeader("X-App-Id", _appId);
                 request.SetRequestHeader("Accept", "application/json");
 
+                // If the core could not answer, still stamp a version. A GET
+                // carrying none is one the server cannot version-target at
+                // all, which is the defect this whole path exists to remove.
+                // Parity with Flutter's configRequestHeaders fallback and with
+                // LayersSDK.SdkVersionHeader on /users/properties.
+                // Via SdkVersionHeader() rather than re-composing the short
+                // shape: that accessor asks the core first and falls back to a
+                // string that still names the engine. A hand-built
+                // "unity/{SdkVersion}" drops the engine token, so /config would
+                // be the one endpoint where Unity traffic could not be told
+                // apart from any other engine's.
+                if (!sdkVersionApplied)
+                    request.SetRequestHeader("X-SDK-Version", LayersSDK.SdkVersionHeader());
+
+                // This poller owns its own ETag: it is the one the LAST 200 on
+                // this request path returned, so it wins over whatever the core
+                // may have cached.
                 if (!string.IsNullOrEmpty(_etag))
                     request.SetRequestHeader("If-None-Match", _etag);
 

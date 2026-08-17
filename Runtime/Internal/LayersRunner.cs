@@ -13,8 +13,9 @@ namespace Layers.Unity.Internal
     ///
     /// In addition to flush/lifecycle plumbing, this runner is responsible for
     /// the Tier 2 lifecycle auto-capture surface — <c>$app_open</c>,
-    /// <c>$app_background</c>, <c>$app_terminate</c>, and the once-per-install
-    /// <c>$first_open</c> / version-change <c>$app_update</c> events.
+    /// <c>$app_background</c>, <c>$app_terminate</c>, and the version-change
+    /// <c>$app_update</c> event. The once-per-install <c>$first_open</c> is
+    /// emitted by the Rust core during <c>LayersSDK.Initialize</c>, not here.
     /// </summary>
     internal class LayersRunner : MonoBehaviour
     {

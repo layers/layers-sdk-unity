@@ -39,7 +39,7 @@ namespace Layers.Unity
 
         // Kept in sync with package.json by the release pipeline's version
         // injection (release.yml) and verified by scripts/check-versions.
-        internal const string SdkVersion = "3.2.8";
+        internal const string SdkVersion = "3.2.9";
 
         // ── State ────────────────────────────────────────────────────────
 
@@ -317,7 +317,12 @@ namespace Layers.Unity
                 string baseUrl = !string.IsNullOrEmpty(config.BaseUrl)
                     ? config.BaseUrl
                     : "https://in.layers.com";
-                _configPoller = new RemoteConfigPoller(runner, baseUrl, config.AppId);
+                // The header source is the core itself, so the /config GET
+                // carries the same X-SDK-Version the events path sends and the
+                // server can target a config at this SDK version.
+                _configPoller = new RemoteConfigPoller(
+                    runner, baseUrl, config.AppId,
+                    () => _platform != null ? _platform.ConfigHeadersJson() : null);
 
                 // Subscribe to config updates for SKAN auto-config (iOS only)
 #if UNITY_IOS && !UNITY_EDITOR
@@ -607,6 +612,85 @@ namespace Layers.Unity
         // ── User Properties HTTP POST ────────────────────────────────
 
         /// <summary>
+        /// Build the POST /users/properties request body.
+        ///
+        /// Split out from <see cref="SendUserPropertiesAsync"/> so the wire
+        /// contract can be asserted against schema/user-properties.schema.json
+        /// — the send itself goes through UnityWebRequest inside a coroutine
+        /// and is not interceptable from an EditMode test.
+        /// </summary>
+        internal static Dictionary<string, object> BuildUserPropertiesPayload(
+            string appId,
+            string appUserId,
+            Dictionary<string, object> properties,
+            string timestamp,
+            bool setOnce,
+            string deviceId)
+        {
+            var payload = new Dictionary<string, object>
+            {
+                ["app_id"] = appId,
+                ["app_user_id"] = appUserId,
+                ["properties"] = properties,
+                ["timestamp"] = timestamp
+            };
+            // The core's device_id — the same value already attached to every
+            // event. The server joins the (device_id, user_id) pair to stitch
+            // anonymous activity onto the identified profile, so omitting it
+            // here left every /users/properties upsert unstitchable. Empty is
+            // treated as absent: the schema declares minLength 1.
+            if (!string.IsNullOrEmpty(deviceId))
+            {
+                payload["device_id"] = deviceId;
+            }
+            if (setOnce)
+            {
+                payload["set_once"] = true;
+            }
+            return payload;
+        }
+
+        /// <summary>
+        /// The <c>X-SDK-Version</c> a hand-built request should send.
+        ///
+        /// Read back from the core, which composed it once at init as
+        /// <c>{wrapper}/{ver} rust-core/{ver}</c> and stamps that exact string
+        /// on the events path. Re-deriving <c>unity/{SdkVersion}</c> here made
+        /// one install present two different versions to the same server; the
+        /// short shape survives only as the fallback for when the core has no
+        /// answer (not initialized, shut down, FFI error).
+        /// </summary>
+        internal static string SdkVersionHeader()
+        {
+            string json = null;
+            try
+            {
+                var platform = _platform;
+                if (platform != null) json = platform.FlushHeadersJson();
+            }
+            catch (Exception e)
+            {
+                LayersLogger.Warn($"Could not read the SDK version from the core: {e.Message}");
+            }
+
+            if (!string.IsNullOrEmpty(json))
+            {
+                string fromCore;
+                if (FlushManager.ParseHeaders(json).TryGetValue("X-SDK-Version", out fromCore)
+                    && !string.IsNullOrEmpty(fromCore))
+                {
+                    return fromCore;
+                }
+            }
+
+            // The fallback names the engine too: a request that silently drops
+            // the token is indistinguishable on the wire from one produced by a
+            // different engine. The core's own value already ends in
+            // engine/rust (ENGINE_TOKEN in core/src/client.rs).
+            return $"unity/{SdkVersion} engine/rust";
+        }
+
+        /// <summary>
         /// Fire-and-forget POST to /users/properties.
         /// Matches the pattern from Web, Node, and React Native SDKs.
         /// Best-effort: errors are logged but not propagated.
@@ -621,18 +705,15 @@ namespace Layers.Unity
                 : "https://in.layers.com";
 
             string appUserId = _userId ?? InstallIdProvider.GetOrCreate();
+            string deviceId = _platform != null ? _platform.GetDeviceId() : null;
 
-            var payload = new Dictionary<string, object>
-            {
-                ["app_id"] = _config.AppId,
-                ["app_user_id"] = appUserId,
-                ["properties"] = properties,
-                ["timestamp"] = DateTime.UtcNow.ToString("o")
-            };
-            if (setOnce)
-            {
-                payload["set_once"] = true;
-            }
+            var payload = BuildUserPropertiesPayload(
+                _config.AppId,
+                appUserId,
+                properties,
+                DateTime.UtcNow.ToString("o"),
+                setOnce,
+                deviceId);
 
             string url = $"{baseUrl}/users/properties";
             string body = JsonHelper.Serialize(payload);
@@ -650,7 +731,7 @@ namespace Layers.Unity
                 request.downloadHandler = new DownloadHandlerBuffer();
                 request.SetRequestHeader("Content-Type", "application/json");
                 request.SetRequestHeader("X-App-Id", _config.AppId);
-                request.SetRequestHeader("X-SDK-Version", $"unity/{SdkVersion}");
+                request.SetRequestHeader("X-SDK-Version", SdkVersionHeader());
                 request.timeout = 10;
 
                 yield return request.SendWebRequest();
@@ -2032,9 +2113,10 @@ namespace Layers.Unity
 
         /// <summary>
         /// Cold launch (called from <see cref="LayersRunner.Start"/>).
-        /// Emits <c>$first_open</c> on a genuine first launch, <c>$app_update</c>
-        /// when <see cref="Application.version"/> has changed since last launch,
-        /// and always emits <c>$app_open</c>.
+        /// Emits <c>$app_update</c> when <see cref="Application.version"/> has
+        /// changed since last launch, and always emits <c>$app_open</c>.
+        /// <c>$first_open</c> is emitted by the Rust core during
+        /// <see cref="LayersSDK.Initialize"/>, never from here.
         ///
         /// All Tier 2 events are no-ops when
         /// <see cref="LayersConfig.AutoCaptureLifecycle"/> is false.
@@ -2044,20 +2126,38 @@ namespace Layers.Unity
             if (!_isInitialized) return;
             if (_config == null || !_config.AutoCaptureLifecycle) return;
 
-            // First-open detection. The legacy app_install / app_open path uses
-            // PlayerPrefs("layers_first_launch_tracked") via InstallEventGate;
-            // we share that signal via the cached IsFirstLaunch() helper so
-            // we never double-emit $first_open AND never double-flip the
-            // PlayerPrefs flag.
+            // First-launch detection. The legacy app_install / app_open path
+            // uses PlayerPrefs("layers_first_launch_tracked") via
+            // InstallEventGate; we share that signal via the cached
+            // IsFirstLaunch() helper so we never double-flip the PlayerPrefs
+            // flag. It gates $app_update below and stamps is_first_launch on
+            // $app_open — it does NOT gate a $first_open here.
+            //
+            // $first_open is emitted by the Rust core during Initialize —
+            // owned there because the per-install gate lives in the same
+            // persistence record as device_id / anonymous_id /
+            // first_open_time, and the core arms the event with a stable
+            // event_id so a re-emission after a crash is absorbed by
+            // server-side dedup. Initialize reaches it via
+            // _platform.SetDeviceContext(...), which calls the core's
+            // emit_pending_first_open().
+            //
+            // Emitting it here too double-fired on every fresh install: the
+            // two gates (this PlayerPrefs flag and the Rust file-backed
+            // identity record) share no state, and the two events carry two
+            // independent event_ids, so ON CONFLICT (event_id) DO NOTHING on
+            // the server cannot collapse them. Every Unity install counted
+            // two $first_opens. Swift documents the same hazard in
+            // LifecycleModule.emitInitialEvents() and has never emitted it
+            // from the wrapper.
+            //
+            // The wrapper copy carried no data the core's copy lacks:
+            // app_version and timezone are already on every event as
+            // top-level wire fields, stamped from the device context
+            // DeviceInfoCollector.Collect() supplies at Initialize — the
+            // timezone expression there is character-for-character the one
+            // this block used.
             bool isFirstLaunch = IsFirstLaunch();
-            if (isFirstLaunch)
-            {
-                Track(StandardEvents.LayersFirstOpen, new Dictionary<string, object>
-                {
-                    ["app_version"] = SafeAppVersion(),
-                    ["timezone"] = System.TimeZoneInfo.Local.Id
-                });
-            }
 
             // App-update detection. A version change between launches emits a
             // single $app_update event with the previous + current versions
@@ -2292,10 +2392,11 @@ namespace Layers.Unity
         /// the SDK is added to an existing app.
         ///
         /// The result is cached for the lifetime of the process — both the
-        /// legacy <c>app_install</c>/<c>app_open</c> path and the Tier 2
-        /// <c>$first_open</c> path consult this single answer so the side-
-        /// effecting <see cref="InstallEventGate.DetermineIsFirstLaunch"/>
-        /// runs at most once per launch.
+        /// legacy <c>app_install</c>/<c>app_open</c> path and the
+        /// <c>$app_update</c> suppression consult this single answer so the
+        /// side-effecting <see cref="InstallEventGate.DetermineIsFirstLaunch"/>
+        /// runs at most once per launch. It does not gate <c>$first_open</c>,
+        /// which the Rust core owns.
         /// </summary>
         private static bool IsFirstLaunch()
         {

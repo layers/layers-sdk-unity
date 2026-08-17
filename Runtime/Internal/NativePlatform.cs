@@ -98,6 +98,11 @@ namespace Layers.Unity.Internal
             return NativeStringHelper.ReadAndFree(NativeBindings.layers_flush_headers_json());
         }
 
+        public string ConfigHeadersJson()
+        {
+            return NativeStringHelper.ReadAndFree(NativeBindings.layers_config_headers_json());
+        }
+
         public string EventsUrl()
         {
             return NativeStringHelper.ReadAndFree(NativeBindings.layers_events_url());

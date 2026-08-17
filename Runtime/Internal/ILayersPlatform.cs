@@ -112,6 +112,17 @@ namespace Layers.Unity.Internal
         string FlushHeadersJson();
 
         /// <summary>
+        /// Return the headers for a <c>/config</c> GET as a JSON string.
+        ///
+        /// The core composes <c>X-SDK-Version</c> once at init and stamps that
+        /// same string on every endpoint. Reading it back from here is what
+        /// keeps a hand-built request identifiable to a version-targeted
+        /// remote config, instead of re-deriving a shorter shape from the
+        /// wrapper's own version constant.
+        /// </summary>
+        string ConfigHeadersJson();
+
+        /// <summary>
         /// Return the events ingest URL.
         /// </summary>
         string EventsUrl();

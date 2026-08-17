@@ -115,9 +115,13 @@ namespace Layers.Unity
         /// Tier 2 lifecycle auto-capture (opt-out, default true). When enabled
         /// the SDK auto-fires the canonical $-prefixed lifecycle events:
         /// <c>$app_open</c>, <c>$app_background</c>, <c>$app_terminate</c>,
-        /// <c>$first_open</c>, and <c>$app_update</c>. Disable this if your
-        /// app emits its own lifecycle telemetry and you want to avoid
-        /// duplicates.
+        /// and <c>$app_update</c>. Disable this if your app emits its own
+        /// lifecycle telemetry and you want to avoid duplicates.
+        ///
+        /// <c>$first_open</c> is NOT governed by this flag. The Rust core
+        /// emits it exactly once per install during
+        /// <see cref="LayersSDK.Initialize"/>, gated by its own persisted
+        /// identity record — so it fires even with this set to false.
         /// </summary>
         public bool AutoCaptureLifecycle { get; set; } = true;
 
