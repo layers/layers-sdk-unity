@@ -2,140 +2,8 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <!--
-      Layers Unity SDK Privacy Manifest (iOS)
-
-      Audited 2026-06-10 (audit M3 — per-datatype accuracy pass).
-      Re-audited 2026-08-28 against the code as shipped in 3.2.13. The same
-      Rust core backs this and swift/Sources/Layers/PrivacyInfo.xcprivacy,
-      so the identity data types and required-reason APIs match; the
-      Unity-only items (crash and performance capture) are noted inline.
-
-      What the SDK does with the data, why every identity type below is
-      Linked, why the host app must answer "Yes" to tracking in App Store
-      Connect when ad-network forwarding is on, and why NSPrivacyTracking
-      is still false here (a single ingest host, in.layers.com, that a
-      tracking-domain listing would block for every non-ATT user) — all of
-      that is written out in the Swift manifest's header and at
-      https://layers.com/docs/sdk/app-store-privacy. The reasoning is
-      identical for this wrapper.
-    -->
-    <key>NSPrivacyTracking</key>
-    <false/>
-    <key>NSPrivacyTrackingDomains</key>
-    <array/>
-    <key>NSPrivacyCollectedDataTypes</key>
-    <array>
-        <!-- device_id, anonymous_id, install_id, IDFV always; IDFA after ATT
-             authorization (Plugins/iOS/LayersATTBridge.m → core). -->
-        <dict>
-            <key>NSPrivacyCollectedDataType</key>
-            <string>NSPrivacyCollectedDataTypeDeviceID</string>
-            <key>NSPrivacyCollectedDataTypeLinked</key>
-            <true/>
-            <key>NSPrivacyCollectedDataTypeTracking</key>
-            <false/>
-            <key>NSPrivacyCollectedDataTypePurposes</key>
-            <array>
-                <string>NSPrivacyCollectedDataTypePurposeAnalytics</string>
-                <string>NSPrivacyCollectedDataTypePurposeThirdPartyAdvertising</string>
-                <string>NSPrivacyCollectedDataTypePurposeDeveloperAdvertising</string>
-            </array>
-        </dict>
-        <!-- User id after LayersSDK.Identify(), on every subsequent event. -->
-        <dict>
-            <key>NSPrivacyCollectedDataType</key>
-            <string>NSPrivacyCollectedDataTypeUserID</string>
-            <key>NSPrivacyCollectedDataTypeLinked</key>
-            <true/>
-            <key>NSPrivacyCollectedDataTypeTracking</key>
-            <false/>
-            <key>NSPrivacyCollectedDataTypePurposes</key>
-            <array>
-                <string>NSPrivacyCollectedDataTypePurposeAnalytics</string>
-                <string>NSPrivacyCollectedDataTypePurposeThirdPartyAdvertising</string>
-            </array>
-        </dict>
-        <!-- Events, scenes, sessions, lifecycle. -->
-        <dict>
-            <key>NSPrivacyCollectedDataType</key>
-            <string>NSPrivacyCollectedDataTypeProductInteraction</string>
-            <key>NSPrivacyCollectedDataTypeLinked</key>
-            <true/>
-            <key>NSPrivacyCollectedDataTypeTracking</key>
-            <false/>
-            <key>NSPrivacyCollectedDataTypePurposes</key>
-            <array>
-                <string>NSPrivacyCollectedDataTypePurposeAnalytics</string>
-                <string>NSPrivacyCollectedDataTypePurposeThirdPartyAdvertising</string>
-            </array>
-        </dict>
-        <!-- Commerce helpers send purchase/subscription events (revenue,
-             product_id) — see Runtime/Commerce.cs. -->
-        <dict>
-            <key>NSPrivacyCollectedDataType</key>
-            <string>NSPrivacyCollectedDataTypePurchaseHistory</string>
-            <key>NSPrivacyCollectedDataTypeLinked</key>
-            <true/>
-            <key>NSPrivacyCollectedDataTypeTracking</key>
-            <false/>
-            <key>NSPrivacyCollectedDataTypePurposes</key>
-            <array>
-                <string>NSPrivacyCollectedDataTypePurposeAnalytics</string>
-                <string>NSPrivacyCollectedDataTypePurposeThirdPartyAdvertising</string>
-            </array>
-        </dict>
-        <!-- Click identifiers and campaign parameters captured for
-             attribution and forwarded to the matching network. -->
-        <dict>
-            <key>NSPrivacyCollectedDataType</key>
-            <string>NSPrivacyCollectedDataTypeAdvertisingData</string>
-            <key>NSPrivacyCollectedDataTypeLinked</key>
-            <true/>
-            <key>NSPrivacyCollectedDataTypeTracking</key>
-            <false/>
-            <key>NSPrivacyCollectedDataTypePurposes</key>
-            <array>
-                <string>NSPrivacyCollectedDataTypePurposeThirdPartyAdvertising</string>
-                <string>NSPrivacyCollectedDataTypePurposeDeveloperAdvertising</string>
-            </array>
-        </dict>
-        <!-- Exception capture ($exception events), ON by default
-             (LayersConfig.AutoTrackExceptions) — see
-             Runtime/ExceptionModule.cs. Carries device_id, so Linked. -->
-        <dict>
-            <key>NSPrivacyCollectedDataType</key>
-            <string>NSPrivacyCollectedDataTypeCrashData</string>
-            <key>NSPrivacyCollectedDataTypeLinked</key>
-            <true/>
-            <key>NSPrivacyCollectedDataTypeTracking</key>
-            <false/>
-            <key>NSPrivacyCollectedDataTypePurposes</key>
-            <array>
-                <string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
-            </array>
-        </dict>
-        <!-- Frame timing ($frame_cpu_ms, $frame_gpu_ms, $frame_count), ON by
-             default (LayersConfig.AutoTrackPerformance) — see
-             Runtime/PerformanceModule.cs. Was missing from this manifest
-             until 2026-08-28. -->
-        <dict>
-            <key>NSPrivacyCollectedDataType</key>
-            <string>NSPrivacyCollectedDataTypePerformanceData</string>
-            <key>NSPrivacyCollectedDataTypeLinked</key>
-            <true/>
-            <key>NSPrivacyCollectedDataTypeTracking</key>
-            <false/>
-            <key>NSPrivacyCollectedDataTypePurposes</key>
-            <array>
-                <string>NSPrivacyCollectedDataTypePurposeAnalytics</string>
-            </array>
-        </dict>
-    </array>
     <key>NSPrivacyAccessedAPITypes</key>
     <array>
-        <!-- PlayerPrefs (= NSUserDefaults on iOS) stores small flags
-             (first_open gate, install id fallback). -->
         <dict>
             <key>NSPrivacyAccessedAPIType</key>
             <string>NSPrivacyAccessedAPICategoryUserDefaults</string>
@@ -144,9 +12,6 @@
                 <string>CA92.1</string>
             </array>
         </dict>
-        <!-- Rust persistence layer (core/src/persistence.rs) reads file
-             metadata for hydration; writes are .tmp + rename inside the
-             app container. -->
         <dict>
             <key>NSPrivacyAccessedAPIType</key>
             <string>NSPrivacyAccessedAPICategoryFileTimestamp</string>
@@ -155,9 +20,6 @@
                 <string>C617.1</string>
             </array>
         </dict>
-        <!-- Rust core Instant (std::time) reads system boot time to
-             measure in-app elapsed durations (timed events, breaker
-             reset, Retry-After gate). -->
         <dict>
             <key>NSPrivacyAccessedAPIType</key>
             <string>NSPrivacyAccessedAPICategorySystemBootTime</string>

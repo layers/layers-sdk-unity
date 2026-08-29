@@ -39,7 +39,7 @@ namespace Layers.Unity
 
         // Kept in sync with package.json by the release pipeline's version
         // injection (release.yml) and verified by scripts/check-versions.
-        internal const string SdkVersion = "3.2.14";
+        internal const string SdkVersion = "3.3.0";
 
         // ── State ────────────────────────────────────────────────────────
 
@@ -49,6 +49,10 @@ namespace Layers.Unity
         private static RemoteConfigPoller _configPoller;
         private static string _userId;
         private static ILayersPlatform _platform;
+        private static readonly object _deviceContextLock = new object();
+        private static readonly Dictionary<string, object> _deviceContext =
+            new Dictionary<string, object>();
+        private static string _attAdvertisingId;
 
         // ── Events ───────────────────────────────────────────────────────
 
@@ -183,6 +187,7 @@ namespace Layers.Unity
             if (config == null || string.IsNullOrEmpty(config.AppId))
                 throw new ArgumentException("AppId is required");
 
+            ClearDeviceContext();
             _config = config;
             LayersLogger.Enabled = config.EnableDebug;
 
@@ -262,7 +267,7 @@ namespace Layers.Unity
 #else
             var deviceInfo = DeviceInfoCollector.Collect();
 #endif
-            _platform.SetDeviceContext(JsonHelper.Serialize(deviceInfo));
+            ReplaceDeviceContext(deviceInfo);
 
             // Create the runner singleton (hosts coroutines + lifecycle hooks)
             var runner = LayersRunner.Instance;
@@ -1596,6 +1601,7 @@ namespace Layers.Unity
             // function pointer.
             _platform?.ClearBeforeSend();
             _platform?.Shutdown();
+            ClearDeviceContext();
 
             _isInitialized = false;
             _flushManager = null;
@@ -1717,11 +1723,10 @@ namespace Layers.Unity
         /// <summary>
         /// Request App Tracking Transparency authorization (iOS only).
         ///
-        /// After the user responds, this method automatically:
-        /// - Collects IDFA if authorized
-        /// - Collects IDFV (always available)
-        /// - Updates device context with the identifiers
-        /// - Sets advertising consent based on the ATT result
+        /// After the user responds, this method records the ATT status,
+        /// collects IDFV when available, and collects IDFA only when authorized.
+        /// ATT does not change Layers consent; call <see cref="SetConsent"/>
+        /// explicitly for that policy.
         ///
         /// The callback receives the resulting <see cref="LayersATTStatus"/>.
         /// On non-iOS platforms, the callback receives <see cref="LayersATTStatus.NotDetermined"/>.
@@ -1741,22 +1746,34 @@ namespace Layers.Unity
                 if (status == LayersATTStatus.Authorized)
                     idfa = ATTModule.GetAdvertisingId();
 
-                // Update device context with identifiers
-                if (idfa != null || idfv != null)
+                var ctx = new Dictionary<string, object>
                 {
-                    var ctx = new Dictionary<string, object>();
-                    if (idfa != null) ctx["idfa"] = idfa;
-                    if (idfv != null) ctx["idfv"] = idfv;
-                    ctx["att_status"] = status.ToString().ToLowerInvariant();
-                    _platform?.SetDeviceContext(JsonHelper.Serialize(ctx));
+                    ["att_status"] = status.ToString().ToLowerInvariant()
+                };
+                if (!string.IsNullOrEmpty(idfv)) ctx["idfv"] = idfv;
+
+                // Remember whether the ID currently retained under "idfa"
+                // came from ATT. That lets a later denial remove a stale IDFA
+                // without deleting an Android GAID that uses the same core
+                // field on a platform where ATT does not apply.
+                bool removePreviousIdfa = !string.IsNullOrEmpty(_attAdvertisingId);
+                _attAdvertisingId = status == LayersATTStatus.Authorized &&
+                    !string.IsNullOrEmpty(idfa)
+                        ? idfa
+                        : null;
+                if (_attAdvertisingId != null)
+                {
+                    ctx["idfa"] = _attAdvertisingId;
+                    removePreviousIdfa = false;
                 }
 
-                // Auto-set advertising consent based on ATT result
-                bool advertisingAllowed = status == LayersATTStatus.Authorized;
-                SetConsent(advertising: advertisingAllowed);
+                // Always write ATT status, even if neither identifier exists.
+                if (removePreviousIdfa)
+                    MergeDeviceContext(ctx, "idfa");
+                else
+                    MergeDeviceContext(ctx);
 
-                LayersLogger.Log(
-                    $"ATT status: {status}, advertising consent: {advertisingAllowed}");
+                LayersLogger.Log($"ATT status: {status}; device context updated");
 
                 callback?.Invoke(status);
             });
@@ -1867,7 +1884,7 @@ namespace Layers.Unity
 
             if (ctx.Count > 0)
             {
-                _platform.SetDeviceContext(JsonHelper.Serialize(ctx));
+                MergeDeviceContext(ctx);
                 PlayerPrefs.Save();
             }
 
@@ -1915,7 +1932,7 @@ namespace Layers.Unity
 
             if (ctx.Count > 0)
             {
-                _platform.SetDeviceContext(JsonHelper.Serialize(ctx));
+                MergeDeviceContext(ctx);
 
                 LayersLogger.Log(
                     $"Restored attribution data: deeplinkId={deeplinkId ?? "null"}, gclid={gclid ?? "null"}, " +
@@ -2247,6 +2264,67 @@ namespace Layers.Unity
 
         // ── Private Helpers ──────────────────────────────────────────────
 
+        /// <summary>
+        /// Replace the retained DeviceContext with a complete platform
+        /// snapshot, then send it to the Rust core. The core's setter replaces
+        /// the whole context, so subsequent partial updates must merge into
+        /// this retained snapshot before crossing the FFI boundary.
+        /// </summary>
+        private static void ReplaceDeviceContext(Dictionary<string, object> context)
+        {
+            string json;
+            lock (_deviceContextLock)
+            {
+                _deviceContext.Clear();
+                if (context != null)
+                {
+                    foreach (var entry in context)
+                        _deviceContext[entry.Key] = entry.Value;
+                }
+                json = JsonHelper.Serialize(_deviceContext);
+            }
+            _platform?.SetDeviceContext(json);
+        }
+
+        /// <summary>
+        /// Merge a partial platform update into the complete retained
+        /// DeviceContext. Keys in <paramref name="removeKeys"/> are removed
+        /// before applying the update, which is used when ATT authorization no
+        /// longer permits a previously collected IDFA.
+        /// </summary>
+        private static void MergeDeviceContext(
+            Dictionary<string, object> update,
+            params string[] removeKeys)
+        {
+            string json;
+            lock (_deviceContextLock)
+            {
+                if (removeKeys != null)
+                {
+                    foreach (string key in removeKeys)
+                    {
+                        if (key != null) _deviceContext.Remove(key);
+                    }
+                }
+                if (update != null)
+                {
+                    foreach (var entry in update)
+                        _deviceContext[entry.Key] = entry.Value;
+                }
+                json = JsonHelper.Serialize(_deviceContext);
+            }
+            _platform?.SetDeviceContext(json);
+        }
+
+        private static void ClearDeviceContext()
+        {
+            lock (_deviceContextLock)
+            {
+                _deviceContext.Clear();
+                _attAdvertisingId = null;
+            }
+        }
+
         private static bool CheckInitialized(string method)
         {
             if (_isInitialized) return true;
@@ -2418,7 +2496,7 @@ namespace Layers.Unity
             if (!string.IsNullOrEmpty(idfv))
             {
                 var ctx = new Dictionary<string, object> { ["idfv"] = idfv };
-                _platform.SetDeviceContext(JsonHelper.Serialize(ctx));
+                MergeDeviceContext(ctx);
             }
         }
 
@@ -2453,7 +2531,7 @@ namespace Layers.Unity
                         ["idfa"] = gaid,
                         ["att_status"] = isLimitAdTracking ? "denied" : "authorized"
                     };
-                    _platform.SetDeviceContext(JsonHelper.Serialize(ctx));
+                    MergeDeviceContext(ctx);
 
                     if (_config != null && _config.EnableDebug)
                     {
@@ -2536,4 +2614,3 @@ namespace Layers.Unity
 #endif
     }
 }
-
