@@ -39,7 +39,7 @@ namespace Layers.Unity
 
         // Kept in sync with package.json by the release pipeline's version
         // injection (release.yml) and verified by scripts/check-versions.
-        internal const string SdkVersion = "3.3.0";
+        internal const string SdkVersion = "3.3.1";
 
         // ── State ────────────────────────────────────────────────────────
 
@@ -367,10 +367,24 @@ namespace Layers.Unity
             // on a flag value if the host has wired that.
             if (config.FeatureFlagBootstrap != null)
             {
-                string bootstrapJson = SerializeBootstrap(config.FeatureFlagBootstrap);
-                string bootstrapErr = _platform.SetFeatureFlagBootstrap(bootstrapJson);
-                if (bootstrapErr != null)
-                    LayersLogger.Warn($"FeatureFlagBootstrap apply failed: {bootstrapErr}");
+                string bootstrapJson;
+                try
+                {
+                    bootstrapJson = SerializeBootstrap(config.FeatureFlagBootstrap);
+                }
+                catch (Exception e)
+                {
+                    // A bad bootstrap value must not take down Initialize --
+                    // the SDK still works, it just starts without seeded flags.
+                    LayersLogger.Error($"[Initialize] failed to serialize feature flag bootstrap: {e.Message}");
+                    bootstrapJson = null;
+                }
+                if (bootstrapJson != null)
+                {
+                    string bootstrapErr = _platform.SetFeatureFlagBootstrap(bootstrapJson);
+                    if (bootstrapErr != null)
+                        LayersLogger.Warn($"FeatureFlagBootstrap apply failed: {bootstrapErr}");
+                }
             }
 
             // Collect attribution signals and fire app_open with them (if enabled).
@@ -423,8 +437,13 @@ namespace Layers.Unity
         /// <summary>
         /// Track a custom event with optional properties.
         ///
-        /// Supported property value types: string, int, long, float, double, bool,
-        /// nested Dictionary&lt;string, object&gt;, and IList.
+        /// Property values keep their JSON type on the wire. Supported:
+        /// string, char, every integer width (int, long, uint, ulong, short,
+        /// ushort, byte, sbyte), float, double, decimal, bool, enums (by name;
+        /// <c>[Flags]</c> as an array of names), DateTime / DateTimeOffset
+        /// (ISO 8601), null, any IDictionary (nested object), and any
+        /// IEnumerable — IList, arrays, HashSet, Queue, LINQ results (array).
+        /// Anything else is sent as its <c>ToString()</c>.
         /// </summary>
         /// <param name="eventName">The event name. Must not be null or empty.</param>
         /// <param name="properties">Optional event properties.</param>
@@ -441,7 +460,7 @@ namespace Layers.Unity
             // Merge stored click IDs into event properties so attribution
             // data flows through to the server (matching Kotlin/Swift SDKs).
             var merged = MergeAttributionProperties(properties);
-            string propsJson = merged != null ? JsonHelper.Serialize(merged) : null;
+            if (!TrySerializeProperties("Track", merged, out string propsJson)) return;
 
             // Queue depth gating: verify the Rust core actually accepted the event.
             // Skipped on WebGL because the jslib may buffer events in the pre-init
@@ -483,6 +502,9 @@ namespace Layers.Unity
         /// Track a screen view event with optional properties.
         /// Internally calls the Rust core's <c>screen</c> function which creates
         /// a <c>screen</c> event with the screen name as a property.
+        ///
+        /// Property values keep their JSON type on the wire — see
+        /// <see cref="Track"/> for the supported set.
         /// </summary>
         /// <param name="screenName">The screen name. Must not be null or empty.</param>
         /// <param name="properties">Optional additional properties.</param>
@@ -499,7 +521,7 @@ namespace Layers.Unity
             // Merge stored click IDs into event properties so attribution
             // data flows through to the server (matching Kotlin/Swift SDKs).
             var merged = MergeAttributionProperties(properties);
-            string propsJson = merged != null ? JsonHelper.Serialize(merged) : null;
+            if (!TrySerializeProperties("Screen", merged, out string propsJson)) return;
 
             // Queue depth gating: verify the Rust core actually accepted the event.
             // Skipped on WebGL because the jslib may buffer events in the pre-init
@@ -568,6 +590,9 @@ namespace Layers.Unity
         /// <summary>
         /// Set user properties (upsert semantics). These properties are attached
         /// to the user and sent with every subsequent event.
+        ///
+        /// Property values keep their JSON type on the wire — see
+        /// <see cref="Track"/> for the supported set.
         /// </summary>
         /// <param name="properties">Key-value properties to set.</param>
         public static void SetUserProperties(Dictionary<string, object> properties)
@@ -580,7 +605,7 @@ namespace Layers.Unity
                 return;
             }
 
-            string json = JsonHelper.Serialize(properties);
+            if (!TrySerializeProperties("SetUserProperties", properties, out string json)) return;
             string error = _platform.SetUserProperties(json);
 
             if (error != null)
@@ -605,7 +630,7 @@ namespace Layers.Unity
                 return;
             }
 
-            string json = JsonHelper.Serialize(properties);
+            if (!TrySerializeProperties("SetUserPropertiesOnce", properties, out string json)) return;
             string error = _platform.SetUserPropertiesOnce(json);
 
             if (error != null)
@@ -721,7 +746,12 @@ namespace Layers.Unity
                 deviceId);
 
             string url = $"{baseUrl}/users/properties";
-            string body = JsonHelper.Serialize(payload);
+            // The caller's properties are serialized a SECOND time here, into
+            // the HTTP body. The SetUserProperties guard upstream returns before
+            // reaching this, so in practice the values are already known to
+            // encode -- but this runs on a coroutine and is the last place an
+            // escaping exception would have no owner.
+            if (!TrySerializeProperties("SetUserProperties", payload, out string body)) return;
 
             LayersRunner.Instance.StartCoroutine(PostUserProperties(url, body));
         }
@@ -767,7 +797,7 @@ namespace Layers.Unity
                 return;
             }
 
-            string propsJson = properties != null ? JsonHelper.Serialize(properties) : null;
+            if (!TrySerializeProperties("Group", properties, out string propsJson)) return;
             string error = _platform.Group(groupId, propsJson);
 
             if (error != null)
@@ -790,7 +820,12 @@ namespace Layers.Unity
             if (analytics.HasValue) consent["analytics"] = analytics.Value;
             if (advertising.HasValue) consent["advertising"] = advertising.Value;
 
-            string json = JsonHelper.Serialize(consent);
+            // Only `bool` values reach this dictionary, so the serializer has no
+            // caller object to call ToString() on. Routed through the guard
+            // anyway so the invariant is mechanical -- no JsonHelper.Serialize
+            // on a public API path is unwrapped -- rather than a per-call-site
+            // argument a future edit could quietly invalidate.
+            if (!TrySerializeProperties("SetConsent", consent, out string json)) return;
             string error = _platform.SetConsent(json);
 
             if (error != null)
@@ -955,7 +990,10 @@ namespace Layers.Unity
                 RaiseError("SetSuperProperties", "properties must not be null");
                 return;
             }
-            string json = JsonHelper.Serialize(new Dictionary<string, object>(properties));
+            if (!TrySerializeProperties(
+                    "SetSuperProperties",
+                    new Dictionary<string, object>(properties),
+                    out string json)) return;
             string error = _platform.SetSuperProperties(json);
             if (error != null) RaiseError("SetSuperProperties", error);
         }
@@ -973,7 +1011,10 @@ namespace Layers.Unity
                 RaiseError("SetSuperPropertiesOnce", "properties must not be null");
                 return;
             }
-            string json = JsonHelper.Serialize(new Dictionary<string, object>(properties));
+            if (!TrySerializeProperties(
+                    "SetSuperPropertiesOnce",
+                    new Dictionary<string, object>(properties),
+                    out string json)) return;
             string error = _platform.SetSuperPropertiesOnce(json);
             if (error != null) RaiseError("SetSuperPropertiesOnce", error);
         }
@@ -1370,7 +1411,10 @@ namespace Layers.Unity
                 RaiseError("SetPersonPropertiesForFlags", "properties must not be null");
                 return;
             }
-            string json = JsonHelper.Serialize(new Dictionary<string, object>(properties));
+            if (!TrySerializeProperties(
+                    "SetPersonPropertiesForFlags",
+                    new Dictionary<string, object>(properties),
+                    out string json)) return;
             string error = _platform.SetPersonPropertiesForFlags(json);
             if (error != null) RaiseError("SetPersonPropertiesForFlags", error);
             else NotifyFeatureFlagListeners(); // properties changed → values may have flipped
@@ -1444,7 +1488,19 @@ namespace Layers.Unity
                 RaiseError("SetFeatureFlagBootstrap", "bootstrap must not be null");
                 return;
             }
-            string json = SerializeBootstrap(bootstrap);
+            // FeatureFlags / FeatureFlagPayloads are caller-supplied
+            // Dictionary<string, object>, so a payload value can carry a
+            // throwing ToString() just like an event property can.
+            string json;
+            try
+            {
+                json = SerializeBootstrap(bootstrap);
+            }
+            catch (Exception e)
+            {
+                RaiseError("SetFeatureFlagBootstrap", $"failed to serialize properties: {e.Message}");
+                return;
+            }
             string error = _platform.SetFeatureFlagBootstrap(json);
             if (error != null) RaiseError("SetFeatureFlagBootstrap", error);
             else NotifyFeatureFlagListeners();
@@ -2330,6 +2386,36 @@ namespace Layers.Unity
             if (_isInitialized) return true;
             RaiseError(method, "Layers SDK not initialized. Call LayersSDK.Initialize() first.");
             return false;
+        }
+
+        /// <summary>
+        /// JSON-encode a property bag, routing any serializer failure to
+        /// <see cref="OnError"/> instead of into the caller's game.
+        ///
+        /// <see cref="JsonHelper.Serialize"/> walks caller-supplied data and
+        /// calls <c>ToString()</c> on types it has no case for, so a property
+        /// whose <c>ToString()</c> throws — or a collection another thread
+        /// mutates mid-iteration, which raises
+        /// <c>InvalidOperationException</c> — raises here. At the call sites
+        /// below that exception propagated straight out of <c>Track</c>,
+        /// turning one bad property into a crash in a game that only wanted to
+        /// log an event. The SDK's standing rule is that it never takes the
+        /// host down: report the failure and drop the event.
+        /// </summary>
+        private static bool TrySerializeProperties(
+            string method, Dictionary<string, object> properties, out string json)
+        {
+            try
+            {
+                json = properties != null ? JsonHelper.Serialize(properties) : null;
+                return true;
+            }
+            catch (Exception e)
+            {
+                json = null;
+                RaiseError(method, $"failed to serialize properties: {e.Message}");
+                return false;
+            }
         }
 
         private static void RaiseError(string method, string message)

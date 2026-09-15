@@ -272,7 +272,18 @@ namespace Layers.Unity
         public static void SetCustomRules(List<SKANConversionRule> rules)
         {
 #if UNITY_IOS && !UNITY_EDITOR
-            string json = SerializeRules(rules);
+            // A rule's Conditions dictionary is caller data and reaches the
+            // serializer's default case like any other property value.
+            string json;
+            try
+            {
+                json = SerializeRules(rules);
+            }
+            catch (Exception e)
+            {
+                LayersLogger.Error($"[SKAN] failed to serialize rules: {e.Message}");
+                return;
+            }
             string err = NativeStringHelper.ReadAndFree(
                 NativeBindings.layers_skan_set_rules(json));
             if (!string.IsNullOrEmpty(err))
@@ -291,7 +302,18 @@ namespace Layers.Unity
         public static void ProcessEvent(string eventName, Dictionary<string, object> properties)
         {
 #if UNITY_IOS && !UNITY_EDITOR
-            string propsJson = JsonHelper.Serialize(properties ?? new Dictionary<string, object>());
+            // Public and static, so a game can call it directly with its own
+            // dictionary -- the Track path's guard does not cover that entry.
+            string propsJson;
+            try
+            {
+                propsJson = JsonHelper.Serialize(properties ?? new Dictionary<string, object>());
+            }
+            catch (Exception e)
+            {
+                LayersLogger.Error($"[SKAN] failed to serialize properties: {e.Message}");
+                return;
+            }
             string decisionJson = NativeStringHelper.ReadAndFree(
                 NativeBindings.layers_skan_process_event(eventName, propsJson));
             if (string.IsNullOrEmpty(decisionJson))

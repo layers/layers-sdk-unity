@@ -12,7 +12,7 @@ namespace Layers.Unity
     ///    install detection. These are the canonical analytics primitives.
     ///
     /// 2. <b>Conversion events</b> (no <c>$</c> prefix): legacy/business events
-    ///    consumers fire explicitly. The 50+ named constants below cover the
+    ///    consumers fire explicitly. The 59 named constants below cover the
     ///    common e-commerce, gaming, content, and engagement taxonomies that
     ///    Mixpanel, GA4, Amplitude, and TikTok / Meta CAPI all share.
     ///
@@ -59,7 +59,12 @@ namespace Layers.Unity
         // ── Engagement ─────────────────────────────────────────────────
         public const string TutorialBegin = "tutorial_begin";
         public const string TutorialComplete = "tutorial_complete";
+        // First-run funnel. The server reads `paywall_view`, `paywall_viewed`
+        // and `paywall_shown` as aliases of `paywall_show`, so apps already
+        // sending any of those names keep their history.
+        public const string OnboardingStart = "onboarding_start";
         public const string OnboardingComplete = "onboarding_complete";
+        public const string PaywallShow = "paywall_show";
         public const string ScreenView = "screen_view";
         public const string Search = "search";
         public const string ViewContent = "view_content";
@@ -130,14 +135,14 @@ namespace Layers.Unity
 
         /// <summary>
         /// All standard (non-system) event names, useful for validation and
-        /// IDE auto-completion. 47 entries.
+        /// IDE auto-completion. 59 entries.
         /// </summary>
         public static readonly string[] All =
         {
             // Identity / lifecycle
             Login, Logout, SignUp, Register, AppInstall, AppOpen,
             // Engagement
-            TutorialBegin, TutorialComplete, OnboardingComplete,
+            TutorialBegin, TutorialComplete, OnboardingStart, OnboardingComplete, PaywallShow,
             ScreenView, Search,
             ViewContent, ViewItem, ViewItemList, SelectContent, SelectItem,
             Share, Rate, Feedback, Notification, NotificationOpened, DeepLink,
@@ -332,6 +337,41 @@ namespace Layers.Unity
         {
             var props = new Dictionary<string, object>();
             if (name != null) props["name"] = name;
+            return props;
+        }
+
+        /// <summary>
+        /// Build properties for an onboarding-start event.
+        /// </summary>
+        /// <param name="screenName">The first onboarding screen shown.</param>
+        public static Dictionary<string, object> OnboardingStartEvent(string screenName = null)
+        {
+            var props = new Dictionary<string, object>();
+            if (screenName != null) props["screen_name"] = screenName;
+            return props;
+        }
+
+        /// <summary>
+        /// Build properties for an onboarding-complete event.
+        /// </summary>
+        /// <param name="screenName">The screen the user finished onboarding on.</param>
+        public static Dictionary<string, object> OnboardingCompleteEvent(string screenName = null)
+        {
+            var props = new Dictionary<string, object>();
+            if (screenName != null) props["screen_name"] = screenName;
+            return props;
+        }
+
+        /// <summary>
+        /// Build properties for a paywall-show event.
+        /// </summary>
+        /// <param name="placement">Where the paywall appeared (e.g. "onboarding", "settings").</param>
+        /// <param name="productIds">The products offered on the paywall.</param>
+        public static Dictionary<string, object> PaywallShowEvent(
+            string placement, string[] productIds = null)
+        {
+            var props = new Dictionary<string, object> { ["placement"] = placement };
+            if (productIds != null) props["product_ids"] = productIds;
             return props;
         }
 
