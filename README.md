@@ -13,7 +13,7 @@ Add to your `Packages/manifest.json`:
 ```json
 {
   "dependencies": {
-    "com.layers.analytics": "https://github.com/layers/layers-sdk-unity.git#v3.3.3"
+    "com.layers.analytics": "https://github.com/layers/layers-sdk-unity.git#v3.3.4"
   }
 }
 ```
@@ -21,7 +21,7 @@ Add to your `Packages/manifest.json`:
 Or via Unity Editor: **Window > Package Manager > + > Add package from git URL**:
 
 ```
-https://github.com/layers/layers-sdk-unity.git#v3.3.3
+https://github.com/layers/layers-sdk-unity.git#v3.3.4
 ```
 
 ## Quick Start
@@ -243,7 +243,9 @@ once there is a build gate that can prove it.
 ### Google Advertising ID
 
 Auto-collected on init (requires EDM4U, above). Respects limit-ad-tracking.
-Manual access:
+The lookup runs on a background thread and the callback runs on the main
+thread, delivered by the SDK's runner after `LayersSDK.Initialize`. Manual
+access:
 
 ```csharp
 #if UNITY_ANDROID

@@ -24,9 +24,9 @@
 #
 # WHAT BREAKS WITHOUT IT: AndroidModule reaches these classes by JNI name —
 #
-#   AndroidModule.cs:77   new AndroidJavaClass(
+#   AndroidModule.cs:90   new AndroidJavaClass(
 #                           "com.google.android.gms.ads.identifier.AdvertisingIdClient")
-#   AndroidModule.cs:170  new AndroidJavaClass(
+#   AndroidModule.cs:283  new AndroidJavaClass(
 #                           "com.android.installreferrer.api.InstallReferrerClient")
 #
 # — which gives R8 no static reference to keep them alive, and

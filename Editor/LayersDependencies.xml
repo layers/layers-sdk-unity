@@ -9,8 +9,8 @@
   .androidlib, no Gradle template. Meanwhile AndroidModule.cs reaches both of
   these libraries by JNI class lookup:
 
-    AndroidModule.cs:77   com.google.android.gms.ads.identifier.AdvertisingIdClient
-    AndroidModule.cs:170  com.android.installreferrer.api.InstallReferrerClient
+    AndroidModule.cs:90   com.google.android.gms.ads.identifier.AdvertisingIdClient
+    AndroidModule.cs:283  com.android.installreferrer.api.InstallReferrerClient
 
   Neither is on a stock Unity project's Android classpath, so both lookups
   always failed: the Google Advertising ID and the Play install referrer —

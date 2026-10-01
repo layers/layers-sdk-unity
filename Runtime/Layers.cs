@@ -39,7 +39,7 @@ namespace Layers.Unity
 
         // Kept in sync with package.json by the release pipeline's version
         // injection (release.yml) and verified by scripts/check-versions.
-        internal const string SdkVersion = "3.3.3";
+        internal const string SdkVersion = "3.3.4";
 
         // ── State ────────────────────────────────────────────────────────
 
@@ -2604,20 +2604,35 @@ namespace Layers.Unity
         }
 #endif
 
+        /// <summary>
+        /// The device-context update for an Android GAID result, or null when
+        /// there is no ID to send (Limit Ad Tracking on, zeroed or missing:
+        /// <see cref="AndroidModule.GetAdvertisingId"/> already returns null
+        /// for those). The update carries only <c>idfa</c>. The GAID is sent
+        /// by default; the Rust core strips it while ad_storage consent is
+        /// denied. Android never sends <c>att_status</c>, which carries
+        /// Apple's ATT answer (same rule as React Native since #311).
+        /// </summary>
+        internal static Dictionary<string, object> AndroidGaidContextUpdate(string gaid)
+        {
+            if (string.IsNullOrEmpty(gaid)) return null;
+            return new Dictionary<string, object> { ["idfa"] = gaid };
+        }
+
 #if UNITY_ANDROID && !UNITY_EDITOR
         private static void InitAndroidModules()
         {
-            // Fetch GAID asynchronously (requires background thread on Android)
+            // Fetch GAID asynchronously. The blocking lookup runs on a worker
+            // thread; this callback runs on the main thread, so a Shutdown in
+            // between is visible here.
             AndroidModule.GetAdvertisingId((gaid, isLimitAdTracking) =>
             {
-                if (!string.IsNullOrEmpty(gaid))
+                if (!_isInitialized) return;
+                var ctx = AndroidGaidContextUpdate(gaid);
+                if (ctx != null)
                 {
-                    var ctx = new Dictionary<string, object>
-                    {
-                        ["idfa"] = gaid,
-                        ["att_status"] = isLimitAdTracking ? "denied" : "authorized"
-                    };
-                    MergeDeviceContext(ctx);
+                    // att_status is Apple's ATT answer; Android never sends it.
+                    MergeDeviceContext(ctx, "att_status");
 
                     if (_config != null && _config.EnableDebug)
                     {
@@ -2627,50 +2642,52 @@ namespace Layers.Unity
                 }
             });
 
-            // Fetch install referrer (one-time, persisted via SharedPreferences)
-            AndroidModule.GetInstallReferrer(result =>
+            // Fetch install referrer (one-time, persisted via SharedPreferences).
+            // Returning false leaves the collected flag unset: a result that
+            // arrives after Shutdown is fetched again by the next Initialize.
+            AndroidModule.FetchInstallReferrer(result =>
             {
-                if (result != null && _isInitialized)
+                if (result == null || !_isInitialized) return false;
+
+                var props = result.ToEventProperties();
+                string propsJson = JsonHelper.Serialize(props);
+                _platform.Track("install_referrer", propsJson);
+
+                // Hand any extracted click IDs to SetAttributionData so subsequent
+                // events (app_open, purchase_success, etc.) carry them. Without this,
+                // CAPI relay would only see click IDs on the install_referrer event,
+                // which isn't a CAPI-mapped event.
+                //
+                // Merge with any previously restored / deep-link-set values so we
+                // don't clobber a deeplinkId (or other click ID) already in effect.
+                // The install referrer callback is asynchronous and may fire after
+                // a deep link has already called SetAttributionData.
+                if (!string.IsNullOrEmpty(result.Fbclid) ||
+                    !string.IsNullOrEmpty(result.Gclid) ||
+                    !string.IsNullOrEmpty(result.Ttclid) ||
+                    !string.IsNullOrEmpty(result.Msclkid))
                 {
-                    var props = result.ToEventProperties();
-                    string propsJson = JsonHelper.Serialize(props);
-                    _platform.Track("install_referrer", propsJson);
-
-                    // Hand any extracted click IDs to SetAttributionData so subsequent
-                    // events (app_open, purchase_success, etc.) carry them. Without this,
-                    // CAPI relay would only see click IDs on the install_referrer event,
-                    // which isn't a CAPI-mapped event.
-                    //
-                    // Merge with any previously restored / deep-link-set values so we
-                    // don't clobber a deeplinkId (or other click ID) already in effect.
-                    // The install referrer callback is asynchronous and may fire after
-                    // a deep link has already called SetAttributionData.
-                    if (!string.IsNullOrEmpty(result.Fbclid) ||
-                        !string.IsNullOrEmpty(result.Gclid) ||
-                        !string.IsNullOrEmpty(result.Ttclid) ||
-                        !string.IsNullOrEmpty(result.Msclkid))
+                    try
                     {
-                        try
-                        {
-                            SetAttributionData(
-                                deeplinkId: _deeplinkId,
-                                gclid: result.Gclid ?? _gclid,
-                                fbclid: result.Fbclid ?? _fbclid,
-                                ttclid: result.Ttclid ?? _ttclid,
-                                msclkid: result.Msclkid ?? _msclkid
-                            );
-                        }
-                        catch (Exception e)
-                        {
-                            LayersLogger.Warn($"SetAttributionData from install referrer failed: {e.Message}");
-                        }
+                        SetAttributionData(
+                            deeplinkId: _deeplinkId,
+                            gclid: result.Gclid ?? _gclid,
+                            fbclid: result.Fbclid ?? _fbclid,
+                            ttclid: result.Ttclid ?? _ttclid,
+                            msclkid: result.Msclkid ?? _msclkid
+                        );
                     }
-
-                    if (_config != null && _config.EnableDebug)
+                    catch (Exception e)
                     {
-                        LayersLogger.Log($"Install referrer tracked: {result.RawReferrer}");
+                        LayersLogger.Warn($"SetAttributionData from install referrer failed: {e.Message}");
                     }
                 }
+
+                if (_config != null && _config.EnableDebug)
+                {
+                    LayersLogger.Log($"Install referrer tracked: {result.RawReferrer}");
+                }
+                return true;
             });
         }
 #endif

@@ -26,95 +26,205 @@ namespace Layers.Unity
 
         // ── Advertising ID ─────────────────────────────────────────────
 
+        private const string ZeroedAdvertisingId = "00000000-0000-0000-0000-000000000000";
+
+        // 0 until the first GAID failure of this process has been logged.
+        private static int s_gaidFailureLogged;
+
         /// <summary>
         /// Fetch the Google Advertising ID (GAID) asynchronously.
-        /// Must run on a background thread because AdvertisingIdClient.getAdvertisingIdInfo() blocks.
+        ///
+        /// Threading: the application context and the AdvertisingIdClient
+        /// class are resolved on the calling (main) thread. Resolving the class
+        /// there matters: a thread attached from native code looks classes up
+        /// through the system class loader, which cannot see app classes such
+        /// as AdvertisingIdClient. The blocking getAdvertisingIdInfo() call then
+        /// runs on a dedicated thread that attaches itself to the JVM with
+        /// AndroidJNI.AttachCurrentThread, releases every Java reference, and
+        /// detaches in a finally block. This call owns the thread, so the
+        /// detach touches no other code; a shared thread-pool thread could be
+        /// in use by someone else. Up to 3.3.3 this ran inside Task.Run on a thread
+        /// that was never attached, so every call failed with a
+        /// NullReferenceException and no GAID was ever collected.
+        ///
         /// Returns null via callback if:
         /// - Google Play Services is unavailable
         /// - Limit Ad Tracking is enabled
         /// - The GAID is the zeroed-out placeholder
-        /// - Any exception occurs
+        /// - Any exception occurs (logged once per process with its stack)
         /// </summary>
         /// <param name="callback">
         /// Called with (advertisingId, isLimitAdTrackingEnabled).
-        /// advertisingId is null if unavailable. Invoked on a background thread;
-        /// callers must dispatch to the main thread if needed.
+        /// advertisingId is null if unavailable. Invoked on the Unity main
+        /// thread: a result from the worker thread is posted to the next frame
+        /// of the SDK's runner, which <see cref="LayersSDK.Initialize"/>
+        /// creates. A direct call made before Initialize is answered on the
+        /// first frame after it.
         /// </param>
         public static void GetAdvertisingId(Action<string, bool> callback)
         {
 #if UNITY_ANDROID && !UNITY_EDITOR
-            // Capture the application context on the main thread where
-            // UnityPlayer.currentActivity is guaranteed to be available.
-            // Only the blocking getAdvertisingIdInfo() call runs on a background thread.
-            AndroidJavaObject appContext;
+            AndroidJavaObject appContext = null;
+            AndroidJavaClass adIdClient = null;
             try
             {
                 using (var unityPlayer = new AndroidJavaClass("com.unity3d.player.UnityPlayer"))
                 using (var activity = unityPlayer.GetStatic<AndroidJavaObject>("currentActivity"))
                 {
+                    if (activity == null)
+                    {
+                        LogGaidFailure("no current activity", null);
+                        callback?.Invoke(null, false);
+                        return;
+                    }
                     appContext = activity.Call<AndroidJavaObject>("getApplicationContext");
                 }
 
                 if (appContext == null)
                 {
-                    Debug.LogWarning($"[{Tag}] GAID fetch skipped: applicationContext is null");
+                    LogGaidFailure("applicationContext is null", null);
                     callback?.Invoke(null, false);
                     return;
                 }
+
+                adIdClient = new AndroidJavaClass(
+                    "com.google.android.gms.ads.identifier.AdvertisingIdClient");
             }
             catch (Exception e)
             {
-                Debug.LogWarning($"[{Tag}] GAID fetch failed (no activity): {e.Message}");
+                try { adIdClient?.Dispose(); } catch (Exception) { }
+                try { appContext?.Dispose(); } catch (Exception) { }
+                LogGaidFailure("setup", e);
                 callback?.Invoke(null, false);
                 return;
             }
 
-            System.Threading.Tasks.Task.Run(() =>
+            var worker = new System.Threading.Thread(
+                () => FetchAdvertisingIdOnWorker(appContext, adIdClient, callback))
             {
-                try
-                {
-                    using (appContext)
-                    using (var adIdClient = new AndroidJavaClass(
-                        "com.google.android.gms.ads.identifier.AdvertisingIdClient"))
-                    using (var adInfo = adIdClient.CallStatic<AndroidJavaObject>(
-                        "getAdvertisingIdInfo", appContext))
-                    {
-                        if (adInfo == null)
-                        {
-                            Debug.LogWarning("[LayersSDK] GAID fetch failed: Google Play Services unavailable or returned null");
-                            callback?.Invoke(null, false);
-                            return;
-                        }
-
-                        bool limitTracking = adInfo.Call<bool>("isLimitAdTrackingEnabled");
-                        string id = adInfo.Call<string>("getId");
-
-                        // Zeroed-out GAID means tracking is unavailable
-                        if (string.IsNullOrEmpty(id) ||
-                            id == "00000000-0000-0000-0000-000000000000")
-                        {
-                            callback?.Invoke(null, limitTracking);
-                            return;
-                        }
-
-                        if (limitTracking)
-                        {
-                            callback?.Invoke(null, true);
-                            return;
-                        }
-
-                        callback?.Invoke(id, false);
-                    }
-                }
-                catch (Exception e)
-                {
-                    Debug.LogWarning($"[{Tag}] GAID fetch failed: {e.Message}");
-                    callback?.Invoke(null, false);
-                }
-            });
+                IsBackground = true,
+                Name = "LayersGaid"
+            };
+            try
+            {
+                worker.Start();
+            }
+            catch (Exception e)
+            {
+                try { adIdClient.Dispose(); } catch (Exception) { }
+                try { appContext.Dispose(); } catch (Exception) { }
+                LogGaidFailure("worker start", e);
+                callback?.Invoke(null, false);
+            }
 #else
             callback?.Invoke(null, false);
 #endif
+        }
+
+#if UNITY_ANDROID && !UNITY_EDITOR
+        /// <summary>
+        /// Body of the GAID worker thread. Owns <paramref name="appContext"/>
+        /// and <paramref name="adIdClient"/> (global refs created on the main
+        /// thread) and disposes both before detaching. It makes no JNI call
+        /// unless the attach succeeded, and none after the detach. The result
+        /// is posted to the main thread.
+        /// </summary>
+        private static void FetchAdvertisingIdOnWorker(
+            AndroidJavaObject appContext,
+            AndroidJavaClass adIdClient,
+            Action<string, bool> callback)
+        {
+            string rawId = null;
+            bool limitTracking = false;
+
+            int attach = AndroidJNI.AttachCurrentThread();
+            if (attach != 0)
+            {
+                // Not attached: touching the refs here, even to dispose them,
+                // would be JNI on an unattached thread. The main thread
+                // releases them instead.
+                LayersRunner.PostToMainThread(() =>
+                {
+                    try { adIdClient.Dispose(); } catch (Exception) { }
+                    try { appContext.Dispose(); } catch (Exception) { }
+                    callback?.Invoke(null, false);
+                });
+                LogGaidFailure($"AttachCurrentThread returned {attach}", null);
+                return;
+            }
+
+            try
+            {
+                using (var adInfo = adIdClient.CallStatic<AndroidJavaObject>(
+                    "getAdvertisingIdInfo", appContext))
+                {
+                    if (adInfo == null)
+                    {
+                        LogGaidFailure("Google Play Services returned no advertising info", null);
+                    }
+                    else
+                    {
+                        limitTracking = adInfo.Call<bool>("isLimitAdTrackingEnabled");
+                        rawId = adInfo.Call<string>("getId");
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                rawId = null;
+                limitTracking = false;
+                LogGaidFailure("getAdvertisingIdInfo", e);
+            }
+            finally
+            {
+                try { adIdClient.Dispose(); } catch (Exception) { }
+                try { appContext.Dispose(); } catch (Exception) { }
+                AndroidJNI.DetachCurrentThread();
+            }
+
+            string id = AdvertisingIdToSend(rawId, limitTracking);
+            LayersRunner.PostToMainThread(() => callback?.Invoke(id, limitTracking));
+        }
+#endif
+
+        /// <summary>
+        /// The advertising ID to hand to the SDK, or null when it must be
+        /// withheld: Limit Ad Tracking is on, or the ID is empty or the
+        /// zeroed placeholder Google returns when tracking is unavailable.
+        /// </summary>
+        internal static string AdvertisingIdToSend(string rawId, bool limitAdTracking)
+        {
+            if (limitAdTracking) return null;
+            if (string.IsNullOrEmpty(rawId) || rawId == ZeroedAdvertisingId) return null;
+            return rawId;
+        }
+
+        /// <summary>
+        /// True exactly once per process. The first GAID failure is logged
+        /// with its full stack and later ones stay quiet, so a device where
+        /// the lookup always fails logs one warning per session. Thread-safe.
+        /// </summary>
+        internal static bool ShouldLogGaidFailure()
+        {
+            return System.Threading.Interlocked.Exchange(ref s_gaidFailureLogged, 1) == 0;
+        }
+
+        /// <summary>Test hook: allow the next GAID failure to log again.</summary>
+        internal static void ResetGaidFailureLogForTests()
+        {
+            System.Threading.Interlocked.Exchange(ref s_gaidFailureLogged, 0);
+        }
+
+        /// <summary>
+        /// Log a GAID failure once per process. <paramref name="e"/> is logged
+        /// with <c>ToString()</c> so the stack trace survives.
+        /// </summary>
+        internal static void LogGaidFailure(string stage, Exception e)
+        {
+            if (!ShouldLogGaidFailure()) return;
+            Debug.LogWarning(e == null
+                ? $"[{Tag}] GAID fetch failed ({stage})"
+                : $"[{Tag}] GAID fetch failed ({stage}): {e}");
         }
 
         // ── Install Referrer ───────────────────────────────────────────
@@ -131,9 +241,26 @@ namespace Layers.Unity
         /// </summary>
         /// <param name="callback">
         /// Called with the referrer result, or null if unavailable / already collected.
-        /// Invoked on the main thread via UnitySendMessage-compatible dispatch.
+        /// Invoked on the Unity main thread: a result from the Java listener is
+        /// posted to the next frame of the SDK's runner, which
+        /// <see cref="LayersSDK.Initialize"/> creates.
         /// </param>
         public static void GetInstallReferrer(Action<InstallReferrerResult> callback)
+        {
+            FetchInstallReferrer(result =>
+            {
+                callback?.Invoke(result);
+                return true;
+            });
+        }
+
+        /// <summary>
+        /// The SDK's form of <see cref="GetInstallReferrer"/>. The callback
+        /// returns whether it consumed the result. The collected flag is
+        /// written unless it returns false, so a result dropped after
+        /// Shutdown is fetched again by the next Initialize.
+        /// </summary>
+        internal static void FetchInstallReferrer(Func<InstallReferrerResult, bool> callback)
         {
 #if UNITY_ANDROID && !UNITY_EDITOR
             AndroidJavaObject context = null;
@@ -142,7 +269,8 @@ namespace Layers.Unity
             {
                 // Get the application context. Do NOT wrap context in `using` —
                 // startConnection is async and the proxy callback needs context alive.
-                // The proxy owns context and disposes it after the callback completes.
+                // The proxy owns context and hands it to the main thread with the
+                // result, which releases it after the callback completes.
                 using (var unityPlayer = new AndroidJavaClass("com.unity3d.player.UnityPlayer"))
                 using (var activity = unityPlayer.GetStatic<AndroidJavaObject>("currentActivity"))
                 {
@@ -202,8 +330,9 @@ namespace Layers.Unity
         {
             private readonly AndroidJavaObject _client;
             private readonly AndroidJavaObject _context;
-            private readonly Action<InstallReferrerResult> _callback;
+            private readonly Func<InstallReferrerResult, bool> _callback;
             private bool _completed;
+            private bool _delivered;
 
             // Response codes from InstallReferrerClient.InstallReferrerResponse
             private const int RESPONSE_OK = 0;
@@ -213,12 +342,47 @@ namespace Layers.Unity
             public InstallReferrerStateListenerProxy(
                 AndroidJavaObject client,
                 AndroidJavaObject context,
-                Action<InstallReferrerResult> callback)
+                Func<InstallReferrerResult, bool> callback)
                 : base("com.android.installreferrer.api.InstallReferrerStateListener")
             {
                 _client = client;
                 _context = context;
                 _callback = callback;
+            }
+
+            // Java calls this proxy on the Android UI thread. That thread is
+            // attached to the JVM, so the JNI reads below are safe there. The
+            // SDK callback tracks events through the Rust core, whose APIs are
+            // main-thread-only on Unity, so the result is posted to the Unity
+            // main thread. The context goes with it: the collected flag is
+            // written there after the callback has tracked the referrer, so a
+            // process killed before that frame fetches the referrer again on
+            // the next launch. A callback that drops the result (the SDK after
+            // Shutdown) leaves the flag unset for the same reason. The main
+            // thread then releases the context.
+            private void Deliver(InstallReferrerResult result)
+            {
+                if (_delivered) return;
+                _delivered = true;
+
+                var callback = _callback;
+                var context = _context;
+                LayersRunner.PostToMainThread(() =>
+                {
+                    // Only an explicit false (the SDK dropping the result after
+                    // Shutdown) leaves the flag unset. A callback that throws
+                    // still marks it, as before, and the drain logs the throw.
+                    bool consumed = true;
+                    try
+                    {
+                        consumed = callback == null || callback(result);
+                    }
+                    finally
+                    {
+                        if (result != null && consumed) MarkReferrerCollected(context);
+                        try { context?.Dispose(); } catch (Exception) { }
+                    }
+                });
             }
 
             // Called by the Android Install Referrer API
@@ -238,7 +402,7 @@ namespace Layers.Unity
                                 ? "feature not supported"
                                 : $"error code {responseCode}";
                         Debug.Log($"[{Tag}] Install referrer: {reason}");
-                        _callback?.Invoke(null);
+                        Deliver(null);
                         EndConnection();
                         return;
                     }
@@ -288,16 +452,15 @@ namespace Layers.Unity
                             ClickId = parsed.GetValueOrDefault("click_id")
                         };
 
-                        // Mark as collected so we don't fetch again
-                        MarkReferrerCollected(_context);
-
-                        _callback?.Invoke(result);
+                        // Deliver marks the referrer collected on the main
+                        // thread, after the callback has tracked it.
+                        Deliver(result);
                     }
                 }
                 catch (Exception e)
                 {
                     Debug.LogWarning($"[{Tag}] Install referrer read failed: {e.Message}");
-                    _callback?.Invoke(null);
+                    Deliver(null);
                 }
                 finally
                 {
@@ -323,9 +486,9 @@ namespace Layers.Unity
                     // Ignore — best effort cleanup
                 }
 
-                // Dispose Java objects that the proxy owns (not managed by `using` blocks)
+                // The client is the proxy's to release. The context was
+                // handed to the main thread by Deliver, which releases it.
                 try { _client?.Dispose(); } catch (Exception) { }
-                try { _context?.Dispose(); } catch (Exception) { }
             }
         }
 

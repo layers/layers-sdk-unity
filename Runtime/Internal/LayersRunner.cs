@@ -1,3 +1,5 @@
+using System;
+using System.Collections.Concurrent;
 using UnityEngine;
 
 namespace Layers.Unity.Internal
@@ -9,7 +11,7 @@ namespace Layers.Unity.Internal
     ///
     /// Created lazily on first access. The GameObject is marked with
     /// <see cref="HideFlags.HideAndDontSave"/> so it does not appear in the
-    /// hierarchy and survives scene loads via <see cref="Object.DontDestroyOnLoad"/>.
+    /// hierarchy and survives scene loads via <see cref="UnityEngine.Object.DontDestroyOnLoad"/>.
     ///
     /// In addition to flush/lifecycle plumbing, this runner is responsible for
     /// the Tier 2 lifecycle auto-capture surface — <c>$app_open</c>,
@@ -30,6 +32,42 @@ namespace Layers.Unity.Internal
         // Tier 2: tracks whether we've already emitted an $app_open for the
         // current foreground session. Reset to false when entering background.
         private static bool _appOpenEmittedThisSession;
+
+        // Results produced off the main thread (the Android GAID worker thread,
+        // Java callbacks such as the install referrer listener) are posted here
+        // and run on the next main-thread frame. The Rust core's APIs are
+        // main-thread-only on Unity, and running these callbacks here also
+        // orders them with OnApplicationPause and Shutdown.
+        private static readonly ConcurrentQueue<Action> s_mainThreadQueue
+            = new ConcurrentQueue<Action>();
+
+        /// <summary>
+        /// Run <paramref name="action"/> on the Unity main thread during the
+        /// next <see cref="Update"/>. Safe to call from any thread.
+        /// </summary>
+        internal static void PostToMainThread(Action action)
+        {
+            if (action != null) s_mainThreadQueue.Enqueue(action);
+        }
+
+        /// <summary>
+        /// Run every posted action. Called from <see cref="Update"/>; one
+        /// failing action is logged and does not stop the rest.
+        /// </summary>
+        internal static void DrainMainThreadQueue()
+        {
+            while (s_mainThreadQueue.TryDequeue(out Action action))
+            {
+                try
+                {
+                    action();
+                }
+                catch (Exception e)
+                {
+                    LayersLogger.Warn($"Main-thread callback failed: {e}");
+                }
+            }
+        }
 
         internal static LayersRunner Instance
         {
@@ -83,6 +121,9 @@ namespace Layers.Unity.Internal
             // Tier 5: drain background-thread exception queue on the main
             // thread. Cheap when empty (one ConcurrentQueue.IsEmpty check).
             ExceptionModule.DrainBackgroundQueue();
+
+            // Results from the GAID worker thread and Java callbacks.
+            DrainMainThreadQueue();
 
             // Tier 6: tick the periodic frame-timing sampler.
             PerformanceModule.Tick(Time.unscaledDeltaTime);
