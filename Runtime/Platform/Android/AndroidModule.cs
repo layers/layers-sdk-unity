@@ -321,6 +321,43 @@ namespace Layers.Unity
 #endif
         }
 
+        /// <summary>
+        /// Starts <paramref name="body"/> on a background thread of its own
+        /// named <paramref name="name"/> and returns at once. Returns false
+        /// when the thread could not start, and the caller then answers on
+        /// its own thread. An exception that escapes the body is logged and
+        /// ends only that thread. The install referrer listener uses it to
+        /// keep the Play Store's binder call off the Android UI thread.
+        /// </summary>
+        internal static bool StartWorker(Action body, string name)
+        {
+            try
+            {
+                var worker = new System.Threading.Thread(() =>
+                {
+                    try
+                    {
+                        body();
+                    }
+                    catch (Exception e)
+                    {
+                        Debug.LogWarning($"[{Tag}] {name} failed: {e}");
+                    }
+                })
+                {
+                    IsBackground = true,
+                    Name = name
+                };
+                worker.Start();
+                return true;
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"[{Tag}] {name} could not start: {e.Message}");
+                return false;
+            }
+        }
+
 #if UNITY_ANDROID && !UNITY_EDITOR
         /// <summary>
         /// AndroidJavaProxy that implements InstallReferrerStateListener.
@@ -350,8 +387,8 @@ namespace Layers.Unity
                 _callback = callback;
             }
 
-            // Java calls this proxy on the Android UI thread. That thread is
-            // attached to the JVM, so the JNI reads below are safe there. The
+            // Called from the install referrer worker thread, or from the
+            // Android UI thread when no read runs. It makes no JNI call. The
             // SDK callback tracks events through the Rust core, whose APIs are
             // main-thread-only on Unity, so the result is posted to the Unity
             // main thread. The context goes with it: the collected flag is
@@ -385,28 +422,67 @@ namespace Layers.Unity
                 });
             }
 
-            // Called by the Android Install Referrer API
+            // Called by the Android Install Referrer API, on the Android UI
+            // thread.
             // ReSharper disable once InconsistentNaming — must match Java method name
             public void onInstallReferrerSetupFinished(int responseCode)
             {
                 if (_completed) return;
                 _completed = true;
 
+                if (responseCode != RESPONSE_OK)
+                {
+                    string reason = responseCode == RESPONSE_SERVICE_UNAVAILABLE
+                        ? "service unavailable"
+                        : responseCode == RESPONSE_FEATURE_NOT_SUPPORTED
+                            ? "feature not supported"
+                            : $"error code {responseCode}";
+                    Debug.Log($"[{Tag}] Install referrer: {reason}");
+                    Deliver(null);
+                    EndConnection();
+                    return;
+                }
+
+                // getInstallReferrer is a synchronous binder call into the
+                // Play Store. At first launch the Play Store can still be
+                // finishing the install, and a read on this thread that waits
+                // 5 s is an ANR ("Input dispatching timed out", seen in Play
+                // vitals on 3.3.4). The read runs on a thread of its own, the
+                // way GetAdvertisingId reads the GAID, and this callback
+                // returns at once.
+                if (!StartWorker(ReadOnWorker, "LayersInstallReferrer"))
+                {
+                    Deliver(null);
+                    EndConnection();
+                }
+            }
+
+            /// <summary>
+            /// Body of the install referrer worker thread. It attaches to the
+            /// JVM, reads the details, hands the result to
+            /// <see cref="Deliver"/>, ends the connection and detaches in a
+            /// finally block. It makes no JNI call unless the attach
+            /// succeeded, and none after the detach. Every Java object it
+            /// touches comes from the client the proxy holds, so it looks up
+            /// no app class by name (a thread attached from native code
+            /// resolves names through the system class loader).
+            /// </summary>
+            private void ReadOnWorker()
+            {
+                int attach = AndroidJNI.AttachCurrentThread();
+                if (attach != 0)
+                {
+                    // JNI is off limits on this thread, so the Unity main
+                    // thread ends the connection. Deliver(null) leaves the
+                    // collected flag unset, and the next launch reads again.
+                    Debug.LogWarning($"[{Tag}] Install referrer read failed: AttachCurrentThread returned {attach}");
+                    Deliver(null);
+                    LayersRunner.PostToMainThread(EndConnection);
+                    return;
+                }
+
                 try
                 {
-                    if (responseCode != RESPONSE_OK)
-                    {
-                        string reason = responseCode == RESPONSE_SERVICE_UNAVAILABLE
-                            ? "service unavailable"
-                            : responseCode == RESPONSE_FEATURE_NOT_SUPPORTED
-                                ? "feature not supported"
-                                : $"error code {responseCode}";
-                        Debug.Log($"[{Tag}] Install referrer: {reason}");
-                        Deliver(null);
-                        EndConnection();
-                        return;
-                    }
-
                     using (var details = _client.Call<AndroidJavaObject>("getInstallReferrer"))
                     {
                         string rawReferrer = details.Call<string>("getInstallReferrer");
@@ -465,6 +541,7 @@ namespace Layers.Unity
                 finally
                 {
                     EndConnection();
+                    AndroidJNI.DetachCurrentThread();
                 }
             }
 
