@@ -9,8 +9,8 @@ namespace Layers.Unity.Internal
 {
     /// <summary>
     /// Coroutine-based drain loop that pulls serialized event batches from the Rust
-    /// core via <see cref="IFlushCore.DrainBatch"/> and POSTs them to the ingest
-    /// endpoint using <see cref="UnityWebRequest"/>.
+    /// core via <see cref="IFlushCore.DrainDeliveryBatch"/> and POSTs them to each
+    /// returned URL using <see cref="UnityWebRequest"/>.
     ///
     /// This is the Unity equivalent of Flutter's <c>_flushViaHttp()</c> and the WASM
     /// SDKs' drain-then-fetch pattern. The Rust core owns the queue; this class only
@@ -34,6 +34,7 @@ namespace Layers.Unity.Internal
         private readonly LayersRunner _runner;
         private readonly IFlushCore _core;
         private readonly uint _batchSize;
+        private readonly Func<string> _attStatusProvider;
         private bool _isFlushing;
         private Coroutine _periodicCoroutine;
 
@@ -85,11 +86,14 @@ namespace Layers.Unity.Internal
         /// </summary>
         internal int ReleasedRequestCount { get; private set; }
 
-        internal FlushManager(LayersRunner runner, uint batchSize = 20, IFlushCore core = null)
+        /// <param name="attStatusProvider">iOS passes a live ATT status reader; null elsewhere.</param>
+        internal FlushManager(LayersRunner runner, uint batchSize = 20, IFlushCore core = null,
+            Func<string> attStatusProvider = null)
         {
             _runner = runner;
             _batchSize = batchSize;
             _core = core ?? new NativeFlushCore();
+            _attStatusProvider = attStatusProvider;
         }
 
         /// <summary>
@@ -406,6 +410,20 @@ namespace Layers.Unity.Internal
             }
         }
 
+        private string ReadAttStatus()
+        {
+            if (_attStatusProvider == null) return null;
+            try
+            {
+                return _attStatusProvider();
+            }
+            catch (Exception e)
+            {
+                LayersLogger.Warn($"Reading ATT status failed: {e.Message}");
+                return "not_determined";
+            }
+        }
+
         /// <summary>
         /// Core drain loop: pull batches from Rust, POST each via UnityWebRequest,
         /// and act on the core's verdict.
@@ -440,14 +458,6 @@ namespace Layers.Unity.Internal
                 // AbortFlushAttempt() — it releases a claimed half-open breaker
                 // probe WITHOUT counting a delivery failure (no request was
                 // made).
-                string url = _core.EventsUrl();
-                if (string.IsNullOrEmpty(url))
-                {
-                    _core.AbortFlushAttempt();
-                    LayersLogger.Warn("Flush skipped: no events URL available");
-                    yield break;
-                }
-
                 var headers = ParseHeaders(_core.FlushHeadersJson());
 
                 // Tracks whether any outcome was reported this flush — if
@@ -457,11 +467,21 @@ namespace Layers.Unity.Internal
 
                 while (true)
                 {
-                    string batch = _core.DrainBatch(_batchSize);
+                    string attStatus = ReadAttStatus();
+                    string batch = _core.DrainDeliveryBatch(_batchSize, attStatus, out string url);
                     if (string.IsNullOrEmpty(batch))
                     {
                         if (!reportedOutcome)
                             _core.AbortFlushAttempt();
+                        break;
+                    }
+
+                    if (string.IsNullOrEmpty(url))
+                    {
+                        RequeueBatch(batch);
+                        if (!reportedOutcome)
+                            _core.AbortFlushAttempt();
+                        LayersLogger.Warn("Flush skipped: no events URL available");
                         break;
                     }
 

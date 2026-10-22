@@ -135,6 +135,17 @@ namespace Layers.Unity.Internal
         internal static extern IntPtr layers_drain_batch(uint count);
 
         /// <summary>
+        /// Drain up to count events with their delivery URL. iOS passes the live ATT status.
+        /// Returns null when empty, or a heap-allocated batch JSON or error string.
+        /// A non-null result with null out_url is an error. Free both strings via layers_free_string.
+        /// </summary>
+        [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern IntPtr layers_drain_delivery_batch(
+            uint count,
+            [MarshalAs(UnmanagedType.LPUTF8Str)] string att_status,
+            out IntPtr out_url);
+
+        /// <summary>
         /// Re-enqueue events after a failed HTTP delivery.
         /// Returns the number of re-enqueued events as a string, or an error string.
         /// </summary>

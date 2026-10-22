@@ -1,3 +1,5 @@
+using System;
+
 namespace Layers.Unity.Internal
 {
     /// <summary>
@@ -16,9 +18,8 @@ namespace Layers.Unity.Internal
     /// <see cref="LayersTestMode"/> leaves <c>_flushManager</c> null — so without
     /// a seam those two obligations cannot be asserted at all.
     ///
-    /// The native implementation lives here rather than in its own file because
-    /// it carries no logic: it is the P/Invoke passthrough, and reading it beside
-    /// the interface is how you check that.
+    /// The native implementation lives here beside the interface and handles
+    /// native string ownership and delivery errors.
     /// </summary>
     internal interface IFlushCore
     {
@@ -36,9 +37,6 @@ namespace Layers.Unity.Internal
         /// </summary>
         bool ShouldAttemptFlush();
 
-        /// <summary>The ingest URL for event batches, or null/empty if unavailable.</summary>
-        string EventsUrl();
-
         /// <summary>Flush headers as JSON (array-of-pairs or object).</summary>
         string FlushHeadersJson();
 
@@ -48,6 +46,13 @@ namespace Layers.Unity.Internal
         /// returns, the returned string is the ONLY copy of those events.
         /// </summary>
         string DrainBatch(uint count);
+
+        /// <summary>
+        /// Remove up to count events as a batch routed for delivery; url is where to POST it.
+        /// Returns a null/empty batch when the queue is empty. iOS passes the live ATT status;
+        /// other platforms pass null.
+        /// </summary>
+        string DrainDeliveryBatch(uint count, string attStatus, out string url);
 
         /// <summary>
         /// Put a drained batch back at the FRONT of the Rust queue. Returns the
@@ -78,8 +83,8 @@ namespace Layers.Unity.Internal
     }
 
     /// <summary>
-    /// Production <see cref="IFlushCore"/>: P/Invoke straight through to the Rust
-    /// core via <see cref="NativeBindings"/>. No logic, no state.
+    /// Production <see cref="IFlushCore"/>: calls the Rust core via
+    /// <see cref="NativeBindings"/> and handles returned strings and delivery errors.
     /// </summary>
     internal sealed class NativeFlushCore : IFlushCore
     {
@@ -87,14 +92,25 @@ namespace Layers.Unity.Internal
 
         public bool ShouldAttemptFlush() => NativeBindings.layers_should_attempt_flush() != 0;
 
-        public string EventsUrl() =>
-            NativeStringHelper.ReadAndFree(NativeBindings.layers_events_url());
-
         public string FlushHeadersJson() =>
             NativeStringHelper.ReadAndFree(NativeBindings.layers_flush_headers_json());
 
         public string DrainBatch(uint count) =>
             NativeStringHelper.ReadAndFree(NativeBindings.layers_drain_batch(count));
+
+        public string DrainDeliveryBatch(uint count, string attStatus, out string url)
+        {
+            IntPtr resultPtr = NativeBindings.layers_drain_delivery_batch(count, attStatus, out IntPtr urlPtr);
+            url = NativeStringHelper.ReadAndFree(urlPtr);
+            string body = NativeStringHelper.ReadAndFree(resultPtr);
+            if (url == null && body != null)
+            {
+                LayersLogger.Warn(body);
+                url = null;
+                return null;
+            }
+            return body;
+        }
 
         public string RequeueEvents(string batchJson) =>
             NativeStringHelper.ReadAndFree(NativeBindings.layers_requeue_events(batchJson));

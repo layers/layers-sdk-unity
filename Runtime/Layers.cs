@@ -39,7 +39,7 @@ namespace Layers.Unity
 
         // Kept in sync with package.json by the release pipeline's version
         // injection (release.yml) and verified by scripts/check-versions.
-        internal const string SdkVersion = "3.4.1";
+        internal const string SdkVersion = "3.5.0";
 
         // ── State ────────────────────────────────────────────────────────
 
@@ -231,6 +231,8 @@ namespace Layers.Unity
 
             if (!string.IsNullOrEmpty(config.BaseUrl))
                 configDict["base_url"] = config.BaseUrl;
+            if (!string.IsNullOrEmpty(config.TrackingBaseUrl))
+                configDict["tracking_base_url"] = config.TrackingBaseUrl;
 
             string configJson = JsonHelper.Serialize(configDict);
             string error;
@@ -288,7 +290,12 @@ namespace Layers.Unity
             if (!LayersTestMode.IsEnabled)
             {
                 // Native: start the coroutine-based periodic flush with UnityWebRequest
+#if UNITY_IOS && !UNITY_EDITOR
+                _flushManager = new FlushManager(runner, (uint)config.MaxBatchSize, null,
+                    () => ATTModule.ToWireValue(ATTModule.GetStatus()));
+#else
                 _flushManager = new FlushManager(runner, (uint)config.MaxBatchSize);
+#endif
                 _flushManager.StartPeriodicFlush(config.FlushIntervalMs / 1000f);
             }
 #endif

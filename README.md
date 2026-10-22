@@ -13,7 +13,7 @@ Add to your `Packages/manifest.json`:
 ```json
 {
   "dependencies": {
-    "com.layers.analytics": "https://github.com/layers/layers-sdk-unity.git#v3.4.1"
+    "com.layers.analytics": "https://github.com/layers/layers-sdk-unity.git#v3.5.0"
   }
 }
 ```
@@ -21,7 +21,7 @@ Add to your `Packages/manifest.json`:
 Or via Unity Editor: **Window > Package Manager > + > Add package from git URL**:
 
 ```
-https://github.com/layers/layers-sdk-unity.git#v3.4.1
+https://github.com/layers/layers-sdk-unity.git#v3.5.0
 ```
 
 ## Quick Start
@@ -164,6 +164,17 @@ if (ATTModule.IsAvailable())
 }
 #endif
 ```
+
+### Privacy manifest
+
+The SDK's `PrivacyInfo.xcprivacy` declares `NSPrivacyTracking` as `true` and lists
+`att.layers.com` in `NSPrivacyTrackingDomains`. With advertising consent, iOS
+batches go to `att.layers.com` when the live ATT status is `authorized` and an
+IDFA exists. All other iOS batches go to `in.layers.com` with `idfa` removed.
+
+On iOS 17 and later, requests to a listed tracking domain fail when the user has
+not authorized ATT. iOS apps that request ATT must list only `att.layers.com` in
+their own manifest's `NSPrivacyTrackingDomains`. Do not list `in.layers.com`.
 
 ### iOS Build Setup
 
@@ -316,18 +327,19 @@ LayersSDK.OnError += (message) =>
 
 ## Configuration Reference
 
-| Property             | Default                 | Description                               |
-| -------------------- | ----------------------- | ----------------------------------------- |
-| `AppId`              | required                | Your Layers app ID                        |
-| `Environment`        | `Development`           | `Development`, `Staging`, or `Production` |
-| `BaseUrl`            | `https://in.layers.com` | Ingest endpoint override                  |
-| `EnableDebug`        | `false`                 | Verbose console logging                   |
-| `FlushIntervalMs`    | `30000`                 | Auto-flush interval (ms)                  |
-| `FlushThreshold`     | `20`                    | Events queued before auto-flush           |
-| `MaxQueueSize`       | `10000`                 | Max events before dropping                |
-| `MaxBatchSize`       | `20`                    | Events per HTTP batch                     |
-| `AutoTrackAppOpen`   | `true`                  | Auto-fire `app_open` on init              |
-| `AutoTrackDeepLinks` | `true`                  | Auto-fire `deep_link_opened`              |
+| Property             | Default                  | Description                                                                                            |
+| -------------------- | ------------------------ | ------------------------------------------------------------------------------------------------------ |
+| `AppId`              | required                 | Your Layers app ID                                                                                     |
+| `Environment`        | `Development`            | `Development`, `Staging`, or `Production`                                                              |
+| `BaseUrl`            | `https://in.layers.com`  | Ingest endpoint override                                                                               |
+| `TrackingBaseUrl`    | `https://att.layers.com` | Host for ATT-authorized batches that carry the IDFA; set it with `BaseUrl` for a mock server or proxy. |
+| `EnableDebug`        | `false`                  | Verbose console logging                                                                                |
+| `FlushIntervalMs`    | `30000`                  | Auto-flush interval (ms)                                                                               |
+| `FlushThreshold`     | `20`                     | Events queued before auto-flush                                                                        |
+| `MaxQueueSize`       | `10000`                  | Max events before dropping                                                                             |
+| `MaxBatchSize`       | `20`                     | Events per HTTP batch                                                                                  |
+| `AutoTrackAppOpen`   | `true`                   | Auto-fire `app_open` on init                                                                           |
+| `AutoTrackDeepLinks` | `true`                   | Auto-fire `deep_link_opened`                                                                           |
 
 ## Requirements
 

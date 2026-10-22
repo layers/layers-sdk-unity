@@ -99,6 +99,23 @@ namespace Layers.Unity
 #endif
         }
 
+        internal static string ToWireValue(LayersATTStatus status)
+        {
+            switch (status)
+            {
+                case LayersATTStatus.NotDetermined:
+                    return "not_determined";
+                case LayersATTStatus.Restricted:
+                    return "restricted";
+                case LayersATTStatus.Denied:
+                    return "denied";
+                case LayersATTStatus.Authorized:
+                    return "authorized";
+                default:
+                    return "not_determined";
+            }
+        }
+
         /// <summary>
         /// Request tracking authorization from the user.
         /// Shows the system ATT dialog if the user has not yet been prompted.

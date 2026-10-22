@@ -34,6 +34,12 @@ namespace Layers.Unity
         public string BaseUrl { get; set; }
 
         /// <summary>
+        /// Host for ATT-authorized batches that carry the IDFA. Defaults to https://att.layers.com.
+        /// Overriding BaseUrl leaves this host unchanged. Point both at a mock server or proxy.
+        /// </summary>
+        public string TrackingBaseUrl { get; set; }
+
+        /// <summary>
         /// Enable debug logging via Debug.Log. Default: false.
         /// </summary>
         public bool EnableDebug { get; set; }
