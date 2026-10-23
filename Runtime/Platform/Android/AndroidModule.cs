@@ -237,10 +237,12 @@ namespace Layers.Unity
         ///
         /// Callback receives an InstallReferrerResult with the raw referrer string,
         /// parsed UTM parameters, click/install timestamps, and Play Instant flag.
-        /// Returns null via callback if the referrer is unavailable or already collected.
+        /// Returns null via callback if the referrer is unavailable, already collected,
+        /// or does not arrive within 10 seconds.
         /// </summary>
         /// <param name="callback">
-        /// Called with the referrer result, or null if unavailable / already collected.
+        /// Called with the referrer result, or null if unavailable, already collected,
+        /// or timed out after 10 seconds.
         /// Invoked on the Unity main thread: a result from the Java listener is
         /// posted to the next frame of the SDK's runner, which
         /// <see cref="LayersSDK.Initialize"/> creates.
@@ -306,6 +308,9 @@ namespace Layers.Unity
                 var listener = new InstallReferrerStateListenerProxy(
                     client, context, callback);
                 client.Call("startConnection", listener);
+                // A setup callback that arrives first finishes the request,
+                // and the late timer does nothing.
+                listener.StartTimeout();
             }
             catch (Exception e)
             {
@@ -322,39 +327,151 @@ namespace Layers.Unity
         }
 
         /// <summary>
-        /// Starts <paramref name="body"/> on a background thread of its own
-        /// named <paramref name="name"/> and returns at once. Returns false
-        /// when the thread could not start, and the caller then answers on
-        /// its own thread. An exception that escapes the body is logged and
-        /// ends only that thread. The install referrer listener uses it to
-        /// keep the Play Store's binder call off the Android UI thread.
+        /// Name of the shared install referrer worker.
         /// </summary>
-        internal static bool StartWorker(Action body, string name)
+        internal const string ReferrerWorkerName = "LayersInstallReferrer";
+
+        /// <summary>
+        /// Protects the shared worker and its queue.
+        /// </summary>
+        private static readonly object s_referrerWorkerLock = new object();
+
+        /// <summary>
+        /// Install referrer reads queue behind each other.
+        /// </summary>
+        private static System.Collections.Concurrent.BlockingCollection<Action> s_referrerQueue;
+
+        /// <summary>
+        /// One shared background thread for every install referrer read, started on the first read.
+        /// </summary>
+        private static System.Threading.Thread s_referrerWorker;
+
+        /// <summary>
+        /// Queues <paramref name="body"/> on one shared background worker and
+        /// returns at once. Returns false when the worker could not start,
+        /// and the caller then answers on its own thread. Each task's exception
+        /// is logged and the worker keeps running. The install referrer listener
+        /// uses it to keep the Play Store's binder call off the Android UI thread.
+        /// </summary>
+        internal static bool RunOnReferrerWorker(Action body)
         {
             try
             {
-                var worker = new System.Threading.Thread(() =>
+                lock (s_referrerWorkerLock)
                 {
-                    try
+                    if (s_referrerWorker == null || !s_referrerWorker.IsAlive)
                     {
-                        body();
+                        var queue = new System.Collections.Concurrent.BlockingCollection<Action>();
+                        var worker = new System.Threading.Thread(() =>
+                        {
+                            foreach (var task in queue.GetConsumingEnumerable())
+                            {
+                                try
+                                {
+                                    task();
+                                }
+                                catch (Exception e)
+                                {
+                                    Debug.LogWarning($"[{Tag}] {ReferrerWorkerName} task failed: {e}");
+                                }
+                            }
+                        })
+                        {
+                            IsBackground = true,
+                            Name = ReferrerWorkerName
+                        };
+                        worker.Start();
+                        s_referrerQueue = queue;
+                        s_referrerWorker = worker;
                     }
-                    catch (Exception e)
-                    {
-                        Debug.LogWarning($"[{Tag}] {name} failed: {e}");
-                    }
-                })
-                {
-                    IsBackground = true,
-                    Name = name
-                };
-                worker.Start();
+                    s_referrerQueue.Add(body);
+                }
                 return true;
             }
             catch (Exception e)
             {
-                Debug.LogWarning($"[{Tag}] {name} could not start: {e.Message}");
+                Debug.LogWarning($"[{Tag}] {ReferrerWorkerName} could not start: {e.Message}");
                 return false;
+            }
+        }
+
+        /// <summary>
+        /// The settle-once state of one install referrer request and its timeout.
+        /// Kept free of JNI so EditMode tests can drive it.
+        /// </summary>
+        internal sealed class InstallReferrerRequest
+        {
+            internal const int TimeoutMs = 10000;
+
+            private const int ReadIdle = 0;
+            private const int ReadQueued = 1;
+            private const int ReadRunning = 2;
+            private const int ReadCancelled = 3;
+
+            private int _finished;
+            private int _readPhase;
+            private System.Threading.Timer _timer;
+
+            internal bool TryFinish()
+            {
+                if (System.Threading.Interlocked.CompareExchange(ref _finished, 1, 0) != 0)
+                    return false;
+                System.Threading.Interlocked.Exchange(ref _timer, null)?.Dispose();
+                return true;
+            }
+
+            internal bool IsFinished => System.Threading.Volatile.Read(ref _finished) == 1;
+
+            internal bool TryQueueRead()
+            {
+                // The full fence of Interlocked.CompareExchange pairs with the one in
+                // TryFinish, so either the timeout sees the read or this call
+                // sees the timeout.
+                if (System.Threading.Interlocked.CompareExchange(ref _readPhase, ReadQueued, ReadIdle) != ReadIdle)
+                    return false;
+                return System.Threading.Volatile.Read(ref _finished) == 0;
+            }
+
+            internal bool TryBeginRead()
+            {
+                return System.Threading.Interlocked.CompareExchange(ref _readPhase, ReadRunning, ReadQueued) == ReadQueued;
+            }
+
+            internal bool CancelPendingRead()
+            {
+                while (true)
+                {
+                    int phase = System.Threading.Volatile.Read(ref _readPhase);
+                    if (phase != ReadIdle && phase != ReadQueued) return false;
+                    if (System.Threading.Interlocked.CompareExchange(ref _readPhase, ReadCancelled, phase) == phase)
+                        return true;
+                }
+            }
+
+            internal void StartTimeout(int timeoutMs, Action onTimeout)
+            {
+                try
+                {
+                    var timer = new System.Threading.Timer(_ =>
+                    {
+                        try
+                        {
+                            if (TryFinish()) onTimeout?.Invoke();
+                        }
+                        catch (Exception e)
+                        {
+                            Debug.LogWarning($"[{Tag}] Install referrer timeout failed: {e}");
+                        }
+                    }, null, timeoutMs, System.Threading.Timeout.Infinite);
+                    System.Threading.Interlocked.Exchange(ref _timer, timer);
+                    if (IsFinished)
+                        System.Threading.Interlocked.Exchange(ref _timer, null)?.Dispose();
+                }
+                catch (Exception e)
+                {
+                    Debug.LogWarning($"[{Tag}] Install referrer timeout could not start: {e.Message}");
+                    return;
+                }
             }
         }
 
@@ -369,7 +486,8 @@ namespace Layers.Unity
             private readonly AndroidJavaObject _context;
             private readonly Func<InstallReferrerResult, bool> _callback;
             private bool _completed;
-            private bool _delivered;
+            private readonly InstallReferrerRequest _request = new InstallReferrerRequest();
+            private int _ended;
 
             // Response codes from InstallReferrerClient.InstallReferrerResponse
             private const int RESPONSE_OK = 0;
@@ -397,11 +515,15 @@ namespace Layers.Unity
             // the next launch. A callback that drops the result (the SDK after
             // Shutdown) leaves the flag unset for the same reason. The main
             // thread then releases the context.
-            private void Deliver(InstallReferrerResult result)
+            private bool Deliver(InstallReferrerResult result)
             {
-                if (_delivered) return;
-                _delivered = true;
+                if (!_request.TryFinish()) return false;
+                PostResult(result);
+                return true;
+            }
 
+            private void PostResult(InstallReferrerResult result)
+            {
                 var callback = _callback;
                 var context = _context;
                 LayersRunner.PostToMainThread(() =>
@@ -422,13 +544,34 @@ namespace Layers.Unity
                 });
             }
 
+            internal void StartTimeout() =>
+                _request.StartTimeout(InstallReferrerRequest.TimeoutMs, OnTimeout);
+
+            // Runs on a thread-pool thread and makes no JNI call.
+            private void OnTimeout()
+            {
+                Debug.Log($"[{Tag}] Install referrer: timed out after {InstallReferrerRequest.TimeoutMs} ms");
+                PostResult(null);
+                // A queued read is cancelled and the main thread ends the connection.
+                // A running read holds the client and ends the connection in its
+                // own finally block.
+                if (_request.CancelPendingRead()) LayersRunner.PostToMainThread(EndConnection);
+            }
+
             // Called by the Android Install Referrer API, on the Android UI
             // thread.
             // ReSharper disable once InconsistentNaming — must match Java method name
             public void onInstallReferrerSetupFinished(int responseCode)
             {
+                // A reconnect calls this again. The first call owns the request.
                 if (_completed) return;
                 _completed = true;
+
+                if (_request.IsFinished)
+                {
+                    EndConnection();
+                    return;
+                }
 
                 if (responseCode != RESPONSE_OK)
                 {
@@ -447,10 +590,14 @@ namespace Layers.Unity
                 // Play Store. At first launch the Play Store can still be
                 // finishing the install, and a read on this thread that waits
                 // 5 s is an ANR ("Input dispatching timed out", seen in Play
-                // vitals on 3.3.4). The read runs on a thread of its own, the
-                // way GetAdvertisingId reads the GAID, and this callback
-                // returns at once.
-                if (!StartWorker(ReadOnWorker, "LayersInstallReferrer"))
+                // vitals on 3.3.4). The read runs on the shared worker thread,
+                // and this callback returns at once.
+                if (!_request.TryQueueRead())
+                {
+                    EndConnection();
+                    return;
+                }
+                if (!RunOnReferrerWorker(ReadOnWorker))
                 {
                     Deliver(null);
                     EndConnection();
@@ -458,9 +605,9 @@ namespace Layers.Unity
             }
 
             /// <summary>
-            /// Body of the install referrer worker thread. It attaches to the
-            /// JVM, reads the details, hands the result to
-            /// <see cref="Deliver"/>, ends the connection and detaches in a
+            /// Runs on the shared worker thread, which attaches and detaches
+            /// around each read. It attaches to the JVM, reads the details,
+            /// hands the result to <see cref="Deliver"/>, ends the connection and detaches in a
             /// finally block. It makes no JNI call unless the attach
             /// succeeded, and none after the detach. Every Java object it
             /// touches comes from the client the proxy holds, so it looks up
@@ -469,6 +616,9 @@ namespace Layers.Unity
             /// </summary>
             private void ReadOnWorker()
             {
+                // The timeout cancelled this queued read and the main thread ends
+                // the connection, so this task makes no JNI call.
+                if (!_request.TryBeginRead()) return;
                 int attach = AndroidJNI.AttachCurrentThread();
                 if (attach != 0)
                 {
@@ -549,18 +699,19 @@ namespace Layers.Unity
             // ReSharper disable once InconsistentNaming — must match Java method name
             public void onInstallReferrerServiceDisconnected()
             {
-                // No retry — one-shot fetch, same as Kotlin SDK
+                // The timeout answers a request whose service never connects.
             }
 
             private void EndConnection()
             {
+                if (System.Threading.Interlocked.Exchange(ref _ended, 1) != 0) return;
                 try
                 {
                     _client?.Call("endConnection");
                 }
                 catch (Exception)
                 {
-                    // Ignore — best effort cleanup
+                    // Cleanup errors leave the request settled.
                 }
 
                 // The client is the proxy's to release. The context was
